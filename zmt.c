@@ -284,3 +284,45 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
     // Default case: just start the normal iteration
     return iter_next(iter);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Tree sitter integration /////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+const char *read_chunk(void *payload, uint32_t byte_offset, TSPoint position,
+        uint32_t *bytes_read) {
+    meta_iter_t *iter = (meta_iter_t *)payload;
+    meta_node_t *node;
+    // Tree-sitter apparently likes to backtrack a bunch in the parser, so
+    // detect when they ask for a byte offset that isn't where we last left
+    // off, and jump to that place in the tree
+    if (byte_offset != iter->end_offset.byte)
+        node = iter_start(iter, iter->tree, byte_offset, 0);
+    else
+        node = iter_next(iter);
+
+    if (!node) {
+        *bytes_read = 0;
+        return NULL;
+    }
+
+    // Set number of bytes read, and return a pointer to the raw data
+    *bytes_read = node->leaf.end - node->leaf.start;
+    return (const char *)(node->leaf.chunk_data + node->leaf.start);
+}
+
+// Parse a given source file as C
+TSTree *parse_c_tree(meta_tree_t *tree) {
+    TSParser *parser = ts_parser_new();
+    ts_parser_set_language(parser, tree_sitter_c());
+
+    meta_iter_t iter[1];
+    iter_init(iter, tree);
+
+    TSInput input = {
+        .payload = (void *)iter,
+        .read = read_chunk,
+        .encoding = TSInputEncodingUTF8
+    };
+    return ts_parser_parse(parser, NULL, input);
+}

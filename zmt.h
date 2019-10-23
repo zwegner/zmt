@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include "tree_sitter/api.h"
+
 // Flags
 enum {
     NODE_INNER = 1,
@@ -103,3 +105,8 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
 meta_node_t *iter_next(meta_iter_t *iter);
 // XXX remove this
 meta_tree_t *dumb_read_data(chunk_t *chunk);
+
+// Tree-sitter stuff
+TSTree *parse_c_tree(meta_tree_t *tree);
+// Hacky proto
+TSLanguage *tree_sitter_c();
