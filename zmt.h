@@ -1,5 +1,4 @@
-// XXX no includes here for easy luajit integration
-//#include <stdint.h>
+#include <stdint.h>
 
 // Flags
 enum {
@@ -12,11 +11,9 @@ enum ITER_STATE {
     ITER_CHILDREN,
 };
 
-// These are basically #defines, but this is the luajit-friendly way to do it
-// without needing to run the preprocessor on this file
-enum { MAX_CHILDREN = 2 };
-enum { DUMB_MAX_CHUNKS = 16 };
-enum { ITER_STACK_SIZE = 32 };
+#define MAX_CHILDREN            (2)
+#define DUMB_MAX_CHUNKS         (16)
+#define ITER_STACK_SIZE         (32)
 
 // chunk_t holds big chunks of contiguous backing memory
 // XXX make variant with embedded data for non-mmap()ed memory, so we only

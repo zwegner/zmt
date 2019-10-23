@@ -7,7 +7,7 @@ function load_lib(lib_path, header)
     defs:close()
     return lib
 end
-zmt = load_lib('_out/zmt.so', '_out/zmt.h')
+zmt = load_lib('_out/zmt.so', '_out/pre.h')
 
 -- Iterate through the piece tree
 function iter_pieces(root)
