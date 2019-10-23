@@ -6,11 +6,6 @@ enum {
     NODE_LEAF = 2
 };
 
-enum ITER_STATE {
-    ITER_START,
-    ITER_CHILDREN,
-};
-
 #define MAX_CHILDREN            (2)
 #define DUMB_MAX_CHUNKS         (16)
 #define ITER_STACK_SIZE         (32)
@@ -30,6 +25,8 @@ typedef struct {
 typedef struct meta_node_t {
     uint32_t ref_count;
     uint32_t flags;
+    // XXX This size is inadequate
+    uint32_t byte_count;
     int32_t nl_count;
     union {
         struct {
@@ -38,7 +35,6 @@ typedef struct meta_node_t {
         struct {
             uint32_t start;
             uint32_t end;
-            int32_t _unused;
             // Store a pointer to the raw data, rather than the chunk_t.
             // This is just for efficiency, since we don't want an extra
             // level of indirection for editing. We keep a map of chunks
@@ -63,22 +59,47 @@ typedef struct {
 // Iterator protocol ///////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+// State machine for one frame's iterative tree walking
+enum ITER_STATE {
+    ITER_START,
+    ITER_CHILDREN,
+    ITER_JUMP,
+};
+
+typedef struct {
+    uint64_t byte;
+    uint64_t line;
+} offset_t;
+
+// Stack frame for iterative tree walking
 typedef struct {
     meta_node_t *node;
     int8_t idx;
     enum ITER_STATE state;
 } meta_iter_frame_t;
 
+// Main iterator structure
 typedef struct {
     meta_tree_t *tree;
+
+    // Tree walking stack and depth counter
     meta_iter_frame_t frame[ITER_STACK_SIZE];
     int32_t depth;
+
+    offset_t start_offset;
+    offset_t end_offset;
+
+    offset_t desired_offset;
+
+    meta_node_t dummy;
 } meta_iter_t;
 
 // Prototypes
 chunk_t *map_file(const char *path);
 meta_tree_t *read_data(chunk_t *chunk);
+void iter_init(meta_iter_t *iter, meta_tree_t *tree);
+meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
+        uint64_t byte_offset, uint64_t line_offset);
 meta_node_t *iter_next(meta_iter_t *iter);
-meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree);
 // XXX remove this
 meta_tree_t *dumb_read_data(chunk_t *chunk);
