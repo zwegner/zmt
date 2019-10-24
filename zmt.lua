@@ -8,6 +8,8 @@ defs:close()
 
 -- Alias for tree-sitter
 ts = zmt
+-- Alias for ncurses
+nc = zmt
 
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
@@ -44,7 +46,7 @@ function iter_lines(tree, line_start, line_end)
             for i = 0, node.nl_count - 1 do
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')
-                --assert idx ~= nil
+                assert(idx ~= nil)
                 part = piece:sub(1, idx - 1)
                 piece = piece:sub(idx + 1)
                 coroutine.yield(line, offset, true, part)
@@ -70,18 +72,31 @@ end
 
 -- Terminal escape codes for syntax highlighting
 HL_TYPE = {
-    ['comment']             = 69,
-    ['keyword']             = 41,
-    ['preproc']             = 69,
-    ['keyword.storagecls']  = 41,
-    ['number']              = 9,
-    ['string']              = 160,
-    ['type']                = 41,
-    ['type.user']           = 41,
+    ['default']             = {15,   0},
+    ['comment']             = {69,   0},
+    ['keyword']             = {41,   0},
+    ['preproc']             = {69,   0},
+    ['keyword.storagecls']  = {41,   0},
+    ['number']              = {9,    0},
+    ['string']              = {160,  0},
+    ['type']                = {41,   0},
+    ['type.user']           = {41,   0},
+    ['line_nb']             = {11, 238},
 }
-HL_START = '\027[38;5;%dm'
-HL_END = '\027[0m'
-HL_LINE_NB_FMT = '\027[48;5;238m\027[38;5;3m%4d ' .. HL_END
+
+function init_color()
+    nc.start_color()
+    local idx = 1
+    for k, v in pairs(HL_TYPE) do
+        local fg, bg = unpack(v)
+        nc.init_pair(idx, fg, bg)
+        HL_TYPE[k] = idx
+        idx = idx + 1
+    end
+end
+
+LINE_NB_FMT = '%4d '
+LINE_NB_WIDTH = 5
 
 -- Parse a query file for a given language with tree-sitter
 function get_query(language, path)
@@ -91,13 +106,15 @@ function get_query(language, path)
     return ts.ts_query_new(language, query, #query, dummy, dummy)
 end
 
-function show_highlight(tree, ast, query)
+function draw_lines(win, tree, ast, query, start_line)
     local cursor = ts.ts_query_cursor_new()
     ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(ast))
     local match = ffi.new('TSQueryMatch[1]')
     local cap_idx = ffi.new('uint32_t[1]')
     local cn_len = ffi.new('uint32_t[1]')
     local hl_type
+
+    nc.clear()
 
     -- Advance the TSQueryCursor to the next capture
     function next_capture()
@@ -126,20 +143,32 @@ function show_highlight(tree, ast, query)
 
     -- The current highlight value, so we can have syntax regions that
     -- span multiple lines
-    local cur_hl = HL_END
+    local cur_hl = 0
 
     -- The current tree-sitter query capture start and end byte offsets
     -- Start at -1 so we grab the next capture immediately
     local q_start = -1
     local q_end = -1
 
+    local row = 0
+    local col = 0
+
+    function set_color(color)
+        color = color > 0 and color or HL_TYPE['default']
+        nc.color_set(color, nil)
+    end
+
     -- Iterate through all lines in the file
     local last_line = -1
-    for line, offset, is_end, piece in iter_lines(tree, 0,
+    for line, offset, is_end, piece in iter_lines(tree, start_line,
             tree.root.nl_count - 1) do
         -- Line number display
         if line ~= last_line then
-            io.stdout:write(HL_LINE_NB_FMT:format(line + 1) .. cur_hl)
+            line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
+            set_color(HL_TYPE['line_nb'])
+            nc.mvaddstr(row, 0, line_nb_str)
+            set_color(cur_hl)
+            col = LINE_NB_WIDTH
             last_line = line
         end
 
@@ -151,20 +180,22 @@ function show_highlight(tree, ast, query)
             -- This piece starts or ends highlight. Output the escape code,
             -- and one character of source so we make progress.
             elseif offset == q_start or offset == q_end then
-                cur_hl = (offset == q_start and HL_START:format(hl_type)
-                        or HL_END)
+                cur_hl = (offset == q_start and hl_type or 0)
+                set_color(cur_hl)
                 local part = piece:sub(1, 1)
-                io.stdout:write(cur_hl .. part)
+                nc.mvaddnstr(row, col, part, #part)
                 piece = piece:sub(2)
                 offset = offset + 1
+                col = col + 1
             -- Default case: output up until the next highlight change
             else
                 local bound = (offset < q_start and q_start or q_end)
                 bound = math.min(bound - offset, #piece)
                 local part = piece:sub(1, bound)
-                io.stdout:write(part)
+                nc.mvaddnstr(row, col, part, #part)
                 piece = piece:sub(bound + 1)
                 offset = offset + #part
+                col = col + #part
             end
         end
 
@@ -172,11 +203,17 @@ function show_highlight(tree, ast, query)
         if is_end then
             -- Check for a highlight that ends on the newline
             if offset == q_end then
-                cur_hl = HL_END
+                cur_hl = 0
             end
-            io.stdout:write('\n')
+            row = row + 1
+            col = 0
+            if row >= nc.LINES then
+                break
+            end
         end
     end
+
+    nc.refresh()
 
     ts.ts_query_cursor_delete(cursor)
 end
@@ -185,7 +222,20 @@ end
 local chunk = zmt.map_file(arg[1])
 local tree = zmt.dumb_read_data(chunk)
 
--- Highlight that shit
+-- Set up highlighting
 local ast = zmt.parse_c_tree(tree)
 local query = get_query(ts.tree_sitter_c(), 'ts-query/c.txt')
-show_highlight(tree, ast, query)
+
+function run_tui()
+    local window = nc.initscr()
+    init_color()
+    for i = 0, 10 do
+        local ok, err = pcall(draw_lines, window, tree, ast, query, i)
+        if not ok then break end
+        local c = ffi.C.getchar()
+    end
+    nc.endwin()
+    print(ok, err)
+end
+
+run_tui()

@@ -31,8 +31,8 @@ def rules(ctx):
 
         # Main shared library
         bin_file = '_out/%s/zmt.so' % conf_path
-        cmd = ['cc', '-fPIC', '-shared', '-o', bin_file, *c_flags,
-                *conf_flags, *o_files]
+        cmd = ['cc', '-fPIC', '-shared', '-o', bin_file, '-lncurses',
+                *c_flags, *conf_flags, *o_files]
         ctx.add_rule(bin_file, o_files, cmd)
 
     # Preprocessed headers, with some options to make luajit grok it
