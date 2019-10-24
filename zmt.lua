@@ -6,6 +6,9 @@ local defs = io.open('_out/pre.h')
 ffi.cdef(defs:read('*all'))
 defs:close()
 
+-- Alias for tree-sitter
+ts = zmt
+
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
@@ -85,12 +88,12 @@ function get_query(language, path)
     local query = ffi.string(io.open(path):read('*all'))
     -- We don't care about errors now, just pass an unused array
     local dummy = ffi.new('uint32_t[1]')
-    return zmt.ts_query_new(language, query, #query, dummy, dummy)
+    return ts.ts_query_new(language, query, #query, dummy, dummy)
 end
 
 function show_highlight(tree, ast, query)
-    local cursor = zmt.ts_query_cursor_new()
-    zmt.ts_query_cursor_exec(cursor, query, zmt.ts_tree_root_node(ast))
+    local cursor = ts.ts_query_cursor_new()
+    ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(ast))
     local match = ffi.new('TSQueryMatch[1]')
     local cap_idx = ffi.new('uint32_t[1]')
     local cn_len = ffi.new('uint32_t[1]')
@@ -98,14 +101,14 @@ function show_highlight(tree, ast, query)
 
     -- Advance the TSQueryCursor to the next capture
     function next_capture()
-        local ok = zmt.ts_query_cursor_next_capture(cursor, match, cap_idx)
+        local ok = ts.ts_query_cursor_next_capture(cursor, match, cap_idx)
         if not ok then
             return 1e100, 1e100
         end
         local capture = match[0].captures[cap_idx[0]]
 
         -- Get capture type and its highlight
-        local cn = zmt.ts_query_capture_name_for_id(query,
+        local cn = ts.ts_query_capture_name_for_id(query,
                 capture.index, cn_len)
         cn = ffi.string(cn, cn_len[0])
         hl_type = HL_TYPE[cn]
@@ -116,8 +119,8 @@ function show_highlight(tree, ast, query)
         end
 
         -- Return start/end byte offsets
-        local s = zmt.ts_node_start_byte(capture.node)
-        local e = zmt.ts_node_end_byte(capture.node)
+        local s = ts.ts_node_start_byte(capture.node)
+        local e = ts.ts_node_end_byte(capture.node)
         return s, e
     end
 
@@ -175,7 +178,7 @@ function show_highlight(tree, ast, query)
         end
     end
 
-    zmt.ts_query_cursor_delete(cursor)
+    ts.ts_query_cursor_delete(cursor)
 end
 
 -- Read input file
@@ -184,5 +187,5 @@ local tree = zmt.dumb_read_data(chunk)
 
 -- Highlight that shit
 local ast = zmt.parse_c_tree(tree)
-local query = get_query(zmt.tree_sitter_c(), 'ts-query/c.txt')
+local query = get_query(ts.tree_sitter_c(), 'ts-query/c.txt')
 show_highlight(tree, ast, query)
