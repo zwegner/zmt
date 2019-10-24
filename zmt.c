@@ -119,9 +119,12 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
         return node;
     } else {
         meta_node_t *parent = new_node();
-        uint32_t mid = (start + end) >> 1;
-        parent->inner.children[0] = create_dumb_node(chunk, start, mid);
-        parent->inner.children[1] = create_dumb_node(chunk, mid, end);
+        uint32_t s = start;
+        for (int i = 0; i < MAX_CHILDREN; i++) {
+            uint32_t mid = start + (end - start) * (i+1) / MAX_CHILDREN;
+            parent->inner.children[i] = create_dumb_node(chunk, s, mid);
+            s = mid;
+        }
         set_inner_meta_data(parent);
         return parent;
     }
