@@ -1,7 +1,7 @@
 ffi = require('ffi')
 
 -- Load library and preprocessed source
-local zmt = ffi.load('_out/zmt.so')
+local zmt = ffi.load('_out/rel/zmt.so')
 local defs = io.open('_out/pre.h')
 ffi.cdef(defs:read('*all'))
 defs:close()
