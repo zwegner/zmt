@@ -11,16 +11,16 @@ defs:close()
 --------------------------------------------------------------------------------
 
 -- Iterate through the given piece tree, starting at the given offset
-function iter_pieces(tree, byte_offset)
+function iter_pieces(tree, byte_offset, line_offset)
     byte_offset = byte_offset or 0
     return coroutine.wrap(function()
         local iter = ffi.new('meta_iter_t[1]')
-        local node = zmt.iter_start(iter, tree, byte_offset, 0)
+        local node = zmt.iter_start(iter, tree, byte_offset, line_offset)
         while node ~= nil do
             local l = node.leaf
             -- end is a keyword. Oh well, it's the proper variable name
             local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
-            coroutine.yield(data)
+            coroutine.yield(iter[0].start_offset.byte, data)
             node = zmt.iter_next(iter)
         end
     end)
@@ -43,6 +43,7 @@ HL_TYPE = {
 }
 HL_START = '\027[38;5;%dm'
 HL_END = '\027[0m'
+HL_LINE_NB_FMT = '\027[48;5;238m\027[38;5;3m%4d ' .. HL_END
 
 -- Parse a query file for a given language with tree-sitter
 function get_query(language, path)
@@ -52,7 +53,7 @@ function get_query(language, path)
     return zmt.ts_query_new(language, query, #query, dummy, dummy)
 end
 
-function show_highlight(root, ast, query)
+function show_highlight(tree, ast, query)
     local cursor = zmt.ts_query_cursor_new()
     zmt.ts_query_cursor_exec(cursor, query, zmt.ts_tree_root_node(ast))
     local match = ffi.new('TSQueryMatch[1]')
@@ -85,36 +86,65 @@ function show_highlight(root, ast, query)
         return s, e
     end
 
+    -- The current highlight value, so we can have syntax regions that
+    -- span multiple lines
+    local cur_hl = HL_END
+
+    -- The current tree-sitter query capture start and end byte offsets
+    -- Start at -1 so we grab the next capture immediately
     local q_start = -1
     local q_end = -1
-    local offset = 0
-    -- Iterate through the pieces of the tree, adding highlighting according
-    -- to the tree-sitter captures and the HL_TYPE table above
-    for piece in iter_pieces(root, 0) do
-        -- Chop up this piece into parts that share the same highlight
-        while #piece > 0 do
-            -- Jump the cursor forward until we know the next match
-            if offset > q_end then
-                q_start, q_end = next_capture()
-            -- This piece starts or ends highlight. Output the escape code,
-            -- and one character of source so we make progress.
-            elseif offset == q_start or offset == q_end then
-                local hl = (offset == q_start and HL_START:format(hl_type)
-                        or HL_END)
-                local part = piece:sub(1, 1)
-                io.stdout:write(hl .. part)
-                piece = piece:sub(2)
-                offset = offset + 1
-            -- Default case: output up until the next highlight change
-            else
-                local bound = (offset < q_start and q_start or q_end)
-                bound = math.min(bound - offset, #piece)
-                local part = piece:sub(1, bound)
-                io.stdout:write(part)
-                piece = piece:sub(bound + 1)
-                offset = offset + #part
+
+    -- Iterate through all lines in the file
+    for line = 0, tree.root.nl_count do
+        -- Line number display
+        io.stdout:write(HL_LINE_NB_FMT:format(line + 1) .. cur_hl)
+
+        -- Iterate through the pieces of this line, adding highlighting according
+        -- to the tree-sitter captures and the HL_TYPE table above
+        for offset, piece in iter_pieces(tree, 0, line) do
+            -- Cut off any part after a newline
+            local idx = piece:find('\n')
+            if idx ~= nil then
+                piece = piece:sub(1, idx - 1)
+            end
+
+            -- Chop up this piece into parts that share the same highlight
+            while #piece > 0 do
+                -- Jump the cursor forward until we know the next match
+                if offset > q_end then
+                    q_start, q_end = next_capture()
+                -- This piece starts or ends highlight. Output the escape code,
+                -- and one character of source so we make progress.
+                elseif offset == q_start or offset == q_end then
+                    cur_hl = (offset == q_start and HL_START:format(hl_type)
+                            or HL_END)
+                    local part = piece:sub(1, 1)
+                    io.stdout:write(cur_hl .. part)
+                    piece = piece:sub(2)
+                    offset = offset + 1
+                -- Default case: output up until the next highlight change
+                else
+                    local bound = (offset < q_start and q_start or q_end)
+                    bound = math.min(bound - offset, #piece)
+                    local part = piece:sub(1, bound)
+                    io.stdout:write(part)
+                    piece = piece:sub(bound + 1)
+                    offset = offset + #part
+                end
+            end
+
+            -- Break out if this piece had a newline
+            if idx ~= nil then
+                -- Check for a highlight that ends on the newline
+                if offset == q_end then
+                    cur_hl = HL_END
+                end
+                break
             end
         end
+
+        io.stdout:write('\n')
     end
 
     zmt.ts_query_cursor_delete(cursor)
@@ -122,9 +152,9 @@ end
 
 -- Read input file
 local chunk = zmt.map_file(arg[1])
-local root = zmt.dumb_read_data(chunk)
+local tree = zmt.dumb_read_data(chunk)
 
 -- Highlight that shit
-local ast = zmt.parse_c_tree(root)
+local ast = zmt.parse_c_tree(tree)
 local query = get_query(zmt.tree_sitter_c(), 'ts-query/c.txt')
-show_highlight(root, ast, query)
+show_highlight(tree, ast, query)

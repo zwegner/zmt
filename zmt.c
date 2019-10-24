@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 
 #include "zmt.h"
@@ -224,8 +225,10 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     end.byte += child->byte_count;
                     end.line += child->nl_count;
 
-                    // XXX check line offset
-                    if (end.byte > iter->desired_offset.byte)
+                    if ((iter->desired_offset.byte &&
+                            end.byte > iter->desired_offset.byte) ||
+                        (iter->desired_offset.line &&
+                             end.line >= iter->desired_offset.line))
                         CALL(child, ITER_JUMP);
                     else {
                         iter->start_offset = end;
@@ -256,28 +259,49 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         if (!node)
             return NULL;
 
-        // XXX check line offset
-        assert(iter->start_offset.byte <= byte_offset);
-        assert(iter->end_offset.byte > byte_offset);
+        uint64_t offset = 0;
+        if (byte_offset) {
+            assert(!line_offset);
+            assert(iter->start_offset.byte <= byte_offset);
+            assert(iter->end_offset.byte > byte_offset);
 
-        // Exact match
-        // XXX check line offset
-        if (iter->start_offset.byte == byte_offset)
-            return node;
+            // Exact match
+            if (iter->start_offset.byte == byte_offset)
+                return node;
+
+            // Set offset to desired byte
+            offset = byte_offset - iter->start_offset.byte;
+        } else {
+            assert(line_offset);
+            assert(iter->start_offset.line <= line_offset);
+            assert(iter->end_offset.line >= line_offset);
+
+            // Exact match
+            if (iter->start_offset.line == line_offset)
+                return node;
+
+            // Jump through newlines in this piece until we reach the
+            // desired line
+            uint64_t len = node->leaf.end - node->leaf.start;
+            uint8_t *nl, *start = node->leaf.chunk_data + node->leaf.start;
+            while (iter->start_offset.line < line_offset && offset < len &&
+                    (nl = memchr(start, '\n', len - offset)) != NULL) {
+                offset += nl + 1 - start;
+                start = nl + 1;
+                iter->start_offset.line++;
+            }
+        }
 
         // The desired byte offset is somewhere in the middle. Rather than
         // try to make a weird API to pass this information to the caller,
         // create a dummy node with just the slice we want
         // XXX This is maybe dumb...? We don't get valid metadata for
         // nl_count, etc.
-        uint64_t offset = byte_offset - iter->start_offset.byte;
-        uint64_t len = iter->end_offset.byte - byte_offset;
-        iter->dummy.flags = NODE_LEAF;
-        iter->dummy.byte_count = len;
+        iter->start_offset.byte += offset;
+        iter->dummy = *node;
+        iter->dummy.byte_count -= offset;
+        iter->dummy.leaf.start += offset;
         iter->dummy.nl_count = -1;
-        iter->dummy.leaf.start = node->leaf.start + offset;
-        iter->dummy.leaf.end = node->leaf.end;
-        iter->dummy.leaf.chunk_data = node->leaf.chunk_data;
         return &iter->dummy;
     }
 

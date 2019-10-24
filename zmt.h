@@ -69,8 +69,9 @@ enum ITER_STATE {
 };
 
 typedef struct {
-    uint64_t byte;
-    uint64_t line;
+    // XXX make these 32-bit for now for luajit compat. This size is inadequate!
+    uint32_t byte;
+    uint32_t line;
 } offset_t;
 
 // Stack frame for iterative tree walking
