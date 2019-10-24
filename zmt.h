@@ -17,7 +17,7 @@ enum {
 // need one allocation per chunk
 typedef struct {
     uint32_t ref_count;
-    uint8_t *data;
+    const uint8_t *data;
     size_t len;
     size_t used;
 } chunk_t;
@@ -42,7 +42,7 @@ typedef struct meta_node_t {
             // level of indirection for editing. We keep a map of chunks
             // used within each tree in meta_tree_t so we can access the
             // metadata if we need it.
-            uint8_t *chunk_data;
+            const uint8_t *chunk_data;
         } leaf;
     };
 } meta_node_t;

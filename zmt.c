@@ -72,6 +72,7 @@ meta_node_t *new_leaf() {
 static void set_leaf_meta_data(meta_node_t *node) {
     assert(node->flags & NODE_LEAF);
     node->byte_count = node->leaf.end - node->leaf.start;
+    node->nl_count = 0;
     for (uint32_t i = node->leaf.start; i < node->leaf.end; i++)
         if (node->leaf.chunk_data[i] == '\n')
             node->nl_count++;
@@ -244,6 +245,16 @@ next_iter:
     return NULL;
 }
 
+meta_node_t *make_dummy_node(meta_iter_t *iter, meta_node_t *node,
+        uint64_t offset) {
+    iter->dummy = *node;
+    iter->dummy.leaf.start += offset;
+    // Re-initialize metadata. Maybe we should have an option to not
+    // recalculate this if it's not needed...?
+    set_leaf_meta_data(&iter->dummy);
+    return &iter->dummy;
+}
+
 // Initialize an iterator object, and return the first node
 meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         uint64_t byte_offset, uint64_t line_offset) {
@@ -283,7 +294,8 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
             // Jump through newlines in this piece until we reach the
             // desired line
             uint64_t len = node->leaf.end - node->leaf.start;
-            uint8_t *nl, *start = node->leaf.chunk_data + node->leaf.start;
+            uint8_t *nl;
+            const uint8_t *start = node->leaf.chunk_data + node->leaf.start;
             while (iter->start_offset.line < line_offset && offset < len &&
                     (nl = memchr(start, '\n', len - offset)) != NULL) {
                 offset += nl + 1 - start;
@@ -292,17 +304,16 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
             }
         }
 
+        // XXX Only update byte count here, since that's the only item used
+        // externally right now. Do we want to update line number? That
+        // can be much more expensive than this, needing to scan over all
+        // of the bytes we skipped over...
+        iter->start_offset.byte += offset;
+
         // The desired byte offset is somewhere in the middle. Rather than
         // try to make a weird API to pass this information to the caller,
         // create a dummy node with just the slice we want
-        // XXX This is maybe dumb...? We don't get valid metadata for
-        // nl_count, etc.
-        iter->start_offset.byte += offset;
-        iter->dummy = *node;
-        iter->dummy.byte_count -= offset;
-        iter->dummy.leaf.start += offset;
-        iter->dummy.nl_count = -1;
-        return &iter->dummy;
+        return make_dummy_node(iter, node, offset);
     }
 
     // Default case: just start the normal iteration
