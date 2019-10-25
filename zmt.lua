@@ -249,6 +249,7 @@ HL_TYPE = {
     ['status']              = {15,  21},
     ['status-unfocused']    = {0,   15},
 }
+HL_COLORS = {}
 
 LINE_NB_FMT = '%4d '
 LINE_NB_WIDTH = 5
@@ -260,6 +261,7 @@ function init_color()
         local fg, bg = unpack(v)
         nc.init_pair(idx, fg, bg)
         HL_TYPE[k] = idx
+        HL_COLORS[idx] = {fg, bg}
         idx = idx + 1
     end
 end
@@ -528,15 +530,59 @@ function Window(buf, rows, cols, y, x)
     return self
 end
 
+function NullWindow(buf, rows, cols, y, x)
+    local self = {}
+    self.buf = buf
+    self.rows, self.cols, self.y, self.x = rows, cols, y, x
+    self.color = nil
+    self.start_line = 0
+    self.row = 0
+
+    function self.clear()
+        self.row = 0
+    end
+    function self.refresh()
+    end
+
+    function self.write_at(row, col, color, str, len)
+        if row ~= self.row then
+            io.stdout:write('\n')
+        end
+        if color ~= self.color then
+            local fg, bg = unpack(HL_COLORS[color])
+            io.stdout:write(('\027[38;5;%dm\027[48;5;%dm'):format(fg, bg))
+            self.color = color
+        end
+        io.stdout:write(str)
+        self.row = row
+    end
+
+    function self.handle_scroll(scroll)
+        self.start_line = self.start_line + scroll
+        self.start_line = math.min(self.start_line, buf.tree.root.nl_count - 1)
+        self.start_line = math.max(self.start_line, 0)
+    end
+
+    return self
+end
+
 function run_tui(buffers, dumb_tui)
-    -- ncurses setup
-    local stdscr = nc.initscr()
-    nc.scrollok(stdscr, true)
-    nc.cbreak()
-    nc.noecho()
+    local Window = Window
+    if dumb_tui then
+        -- Fake out 
+        nc.LINES = 25
+        nc.COLS = 80
+        Window = NullWindow
+    else
+        -- ncurses setup
+        local stdscr = nc.initscr()
+        nc.scrollok(stdscr, true)
+        nc.cbreak()
+        nc.noecho()
+        -- HACK: #defines aren't available, use -1
+        nc.mousemask(ffi.cast('int', -1), nil)
+    end
     init_color()
-    -- HACK: #defines aren't available, use -1
-    nc.mousemask(-1, nil)
 
     -- Make a prefix tree out of all defined input sequences
     local input_tree = parse_input_table(MAIN_INPUT_TABLE)
@@ -546,7 +592,8 @@ function run_tui(buffers, dumb_tui)
     local first = 0
     for i = 1, #buffers do
         local last = math.floor(nc.LINES * i / #buffers)
-        windows[#windows + 1] = Window(buffers[i], last - first, nc.COLS, first, 0)
+        windows[#windows + 1] = Window(buffers[i], last - first,
+                nc.COLS, first, 0)
         first = last
     end
     local cur_win = 1
@@ -564,7 +611,11 @@ function run_tui(buffers, dumb_tui)
     local start_line = 0
     while true do
         -- Draw screen
-        draw_lines(window, true)
+        if dumb_tui then
+            draw_all()
+        else
+            draw_lines(window, true)
+        end
 
         -- Handle input
         local action = get_next_input(input_tree)
