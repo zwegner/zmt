@@ -145,10 +145,14 @@ function TSContext()
         local ext = buf.path:sub(-1, -1)
         local parse, query = self.get_lang(ext)
 
-        -- XXX sticking stuff into buffer object--maybe not the best
-        -- abstraction...?
-        buf.ast = parse(buf.tree)
-        buf.query = TSQuery(query, buf)
+        if not parse then
+            buf.query = TSNullQuery()
+        else
+            -- XXX sticking stuff into buffer object--maybe not the best
+            -- abstraction...?
+            buf.ast = parse(buf.tree)
+            buf.query = TSQuery(query, buf)
+        end
     end
 
     return self
@@ -210,6 +214,17 @@ function TSQuery(query, buf)
         end
         event_start = event_start + 1
         return unpack(events[event_start])
+    end
+    return self
+end
+
+-- TSNullQuery conforms to the TSQuery interface but doesn't return any
+-- highlight events. Used for unknown syntax, etc.
+function TSNullQuery()
+    local self = {}
+    function self.reset(offset) end
+    function self.next_event()
+        return 1e100, nil
     end
     return self
 end
