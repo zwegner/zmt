@@ -168,6 +168,7 @@ function TSQuery(query, buf)
     local cap_names = {}
     local events = {}
     local event_start, event_end = 0, 0
+    local capture_pushback = nil
 
     function self.free()
         ts.ts_query_cursor_delete(cursor)
@@ -178,6 +179,7 @@ function TSQuery(query, buf)
         ts.ts_query_cursor_set_byte_range(cursor, offset, -1)
         events = {}
         event_start, event_end = 0, 0
+        capture_pushback = nil
     end
 
     local function get_capture_name(id)
@@ -190,9 +192,14 @@ function TSQuery(query, buf)
 
     -- Advance the TSQueryCursor to the next capture
     local function next_capture()
+        if capture_pushback then
+            local c = capture_pushback
+            capture_pushback = nil
+            return unpack(c)
+        end
         local ok = ts.ts_query_cursor_next_capture(cursor, match,
                 cap_idx)
-        if not ok then return nil end
+        if not ok then return end
         local capture = match[0].captures[cap_idx[0]]
 
         -- Return capture name, and start/end byte offsets
@@ -205,12 +212,23 @@ function TSQuery(query, buf)
     -- Advance the event iterator
     function self.next_event()
         if event_start >= event_end then
-            local cn, s, e = next_capture()
-            if cn == nil then
-                return 1e100, nil
+            local cn, cap_start, cap_end = next_capture()
+            if cn == nil then return end
+            events = {{cap_start, cn}, {cap_end, nil}}
+
+            -- Fill in any nested captures that happen within this one
+            while true do
+                local cn, s, e = next_capture()
+                if cn == nil or s > cap_end then
+                    assert(capture_pushback == nil)
+                    capture_pushback = {cn, s, e}
+                    break
+                end
+                events[#events+1] = {s, cn}
+                events[#events+1] = {e, nil}
             end
-            events = {{s, cn}, {e, 'default'}}
-            event_start, event_end = 0, 2
+            table.sort(events, function(a, b) return a[1] < b[1] end)
+            event_start, event_end = 0, #events
         end
         event_start = event_start + 1
         return unpack(events[event_start])
@@ -223,9 +241,7 @@ end
 function TSNullQuery()
     local self = {}
     function self.reset(offset) end
-    function self.next_event()
-        return 1e100, nil
-    end
+    function self.next_event() end
     return self
 end
 
@@ -278,7 +294,8 @@ function draw_lines(window, is_focused)
     -- Start at -1 so we grab the next capture immediately
     local event_offset = -1
     local event_hl = -1
-    local q_hl
+    -- Keep a stack of highlights
+    local hl_stack = {HL_TYPE['default']}
 
     local row = 0
     local col = 0
@@ -307,11 +324,22 @@ function draw_lines(window, is_focused)
         while #piece > 0 do
             -- Jump the cursor forward until we know the next match
             while offset > event_offset do
-                event_offset, event_hl = buf.query.next_event()
-                if event_hl ~= nil and HL_TYPE[event_hl] then
-                    event_hl = HL_TYPE[event_hl]
+                local off, hl = buf.query.next_event()
+                event_offset = off
+                if off == nil then
+                    event_offset = 1e100
+                    break
+                end
+                if hl == nil then
+                    -- End of capture, pop the highlight stack
+                    assert(#hl_stack > 1)
+                    hl_stack[#hl_stack] = nil
+                    event_hl = hl_stack[#hl_stack]
                 else
-                    event_hl = HL_TYPE['default']
+                    -- Push this highlight. Duplicate the top stack if this is
+                    -- an ignored capture, so we can still pop it off later
+                    event_hl = HL_TYPE[hl] or hl_stack[#hl_stack]
+                    hl_stack[#hl_stack + 1] = event_hl
                 end
             end
 
