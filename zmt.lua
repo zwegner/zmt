@@ -120,7 +120,7 @@ function TSContext()
     self.langs = {}
 
     -- Parse a query file for a given language with tree-sitter
-    self.get_lang = function(ftype)
+    function self.get_lang(ftype)
         -- Fill in cached entry if it's not there
         if not self.langs[ftype] then
             if not TS_LANGS[ftype] then return nil end
@@ -136,7 +136,7 @@ function TSContext()
         return unpack(self.langs[ftype])
     end
 
-    self.parse_buf = function(buf)
+    function self.parse_buf(buf)
         -- XXX get actual extension/filetype
         local ext = buf.path:sub(-1, -1)
         local parse, lang, query = self.get_lang(ext)
@@ -161,11 +161,11 @@ function TSQuery(query, buf)
     local events = {}
     local event_start, event_end = 0, 0
 
-    self.free = function()
+    function self.free()
         ts.ts_query_cursor_delete(cursor)
     end
 
-    self.reset = function(offset)
+    function self.reset(offset)
         ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(buf.ast))
         ts.ts_query_cursor_set_byte_range(cursor, offset, ffi.cast('int32_t', -1))
         events = {}
@@ -195,7 +195,7 @@ function TSQuery(query, buf)
     end
 
     -- Advance the event iterator
-    self.next_event = function()
+    function self.next_event()
         if event_start >= event_end then
             local cn, s, e = next_capture()
             if cn == nil then
@@ -487,14 +487,14 @@ function Window(buf, lines, cols, y, x)
     self.lines, self.cols, self.y, self.x = lines, cols, y, x
     self.start_line = 0
 
-    self.clear = function() nc.wclear(self.win) end
-    self.refresh = function() nc.wrefresh(self.win) end
+    function self.clear() nc.wclear(self.win) end
+    function self.refresh() nc.wrefresh(self.win) end
 
-    self.set_color = function(color)
+    function self.set_color(color)
         nc.wcolor_set(self.win, color, nil)
     end
 
-    self.write_at = function(row, col, str, len)
+    function self.write_at(row, col, str, len)
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
