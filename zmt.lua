@@ -512,7 +512,7 @@ function Window(buf, lines, cols, y, x)
     return self
 end
 
-function run_tui(buf)
+function run_tui(buffers, dumb_tui)
     -- ncurses setup
     local stdscr = nc.initscr()
     nc.scrollok(stdscr, true)
@@ -525,11 +525,14 @@ function run_tui(buf)
     -- Make a prefix tree out of all defined input sequences
     local input_tree = parse_input_table(MAIN_INPUT_TABLE)
 
-    local half = math.floor(nc.LINES / 2)
-    local windows = {
-        Window(buf, half, nc.COLS, 0, 0),
-        Window(buf, nc.LINES - half, nc.COLS, half, 0),
-    }
+    -- Split window up to show all buffers
+    local windows = {}
+    local first = 0
+    for i = 1, #buffers do
+        local last = math.floor(nc.LINES * i / #buffers)
+        windows[#windows + 1] = Window(buffers[i], last - first, nc.COLS, first, 0)
+        first = last
+    end
     local cur_win = 1
     local window = windows[cur_win]
 
@@ -570,12 +573,20 @@ function main()
     -- Set up highlighting
     local ts_ctx = TSContext()
 
-    -- Read input file and parse it
-    local buf = read_buffer(arg[1])
-    ts_ctx.parse_buf(buf)
+    if #arg < 1 then
+        error('no files')
+    end
+
+    -- Read input files and parse it
+    local buffers = {}
+    for _, path in ipairs(arg) do
+        local buf = read_buffer(path)
+        ts_ctx.parse_buf(buf)
+        buffers[#buffers + 1] = buf
+    end
 
     -- Run the TUI, catching and printing any errors
-    local res = {pcall(run_tui, buf)}
+    local res = {pcall(run_tui, buffers)}
     nc.endwin()
     print(unpack(res))
 end
