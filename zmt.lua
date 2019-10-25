@@ -31,6 +31,10 @@ function enum(stop)
     return unpack(range(1, stop, 1))
 end
 
+function iter(...)
+    return ipairs({...})
+end
+
 function iter_bytes(str)
     return ipairs({str:byte(1, -1)})
 end
@@ -221,7 +225,10 @@ HL_TYPE = {
     ['string']              = {160,  0},
     ['type']                = {41,   0},
     ['type.user']           = {41,   0},
+
     ['line_nb']             = {11, 238},
+    ['status']              = {15,  21},
+    ['status-unfocused']    = {0,   15},
 }
 
 LINE_NB_FMT = '%4d '
@@ -238,8 +245,9 @@ function init_color()
     end
 end
 
-function draw_lines(window, buf, start_line)
-    nc.clear()
+function draw_lines(window, is_focused)
+    local buf = window.buf
+    window.clear()
 
     -- The current highlight value, so we can have syntax regions that
     -- span multiple lines
@@ -255,19 +263,18 @@ function draw_lines(window, buf, start_line)
     local col = 0
 
     function set_color(color)
-        color = color > 0 and color or HL_TYPE['default']
-        nc.wcolor_set(window, color, nil)
+        window.set_color(color > 0 and color or HL_TYPE['default'])
     end
 
     -- Iterate through all lines in the file
     local last_line = -1
-    for line, offset, is_end, piece in iter_lines(buf.tree, start_line,
+    for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
             buf.tree.root.nl_count - 1) do
         -- Line number display
         if line ~= last_line then
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
             set_color(HL_TYPE['line_nb'])
-            nc.mvwaddnstr(window, row, 0, line_nb_str, LINE_NB_WIDTH)
+            window.write_at(row, 0, line_nb_str, LINE_NB_WIDTH)
             set_color(cur_hl)
             col = LINE_NB_WIDTH
             last_line = line
@@ -296,7 +303,7 @@ function draw_lines(window, buf, start_line)
                 cur_hl = event_hl
                 set_color(cur_hl)
                 local part = piece:sub(1, 1)
-                nc.mvwaddnstr(window, row, col, part, #part)
+                window.write_at(row, col, part, #part)
                 piece = piece:sub(2)
                 offset = offset + 1
                 col = col + 1
@@ -304,7 +311,7 @@ function draw_lines(window, buf, start_line)
             elseif event_offset > offset then
                 local bound = math.min(event_offset - offset, #piece)
                 local part = piece:sub(1, bound)
-                nc.mvwaddnstr(window, row, col, part, #part)
+                window.write_at(row, col, part, #part)
                 piece = piece:sub(bound + 1)
                 offset = offset + #part
                 col = col + #part
@@ -319,13 +326,20 @@ function draw_lines(window, buf, start_line)
             end
             row = row + 1
             col = 0
-            if row >= nc.LINES then
+            if row >= window.lines - 1 then
                 break
             end
         end
     end
 
-    nc.wrefresh(window)
+    window.set_color(is_focused and HL_TYPE['status'] or
+            HL_TYPE['status-unfocused'])
+    --local status_line = (' %*s'):format(window.cols, buf.path)
+    for _, line in iter((' '):rep(window.cols), buf.path) do
+        window.write_at(window.lines - 1, 0, line, #line)
+    end
+
+    window.refresh()
 end
 
 --------------------------------------------------------------------------------
@@ -334,7 +348,7 @@ end
 
 -- Action enum
 local QUIT, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
-    SCROLL_HALFPAGE_DOWN, check = enum(100)
+    SCROLL_HALFPAGE_DOWN, WINDOW_SWITCH, check = enum(100)
 assert(check ~= nil)
 
 function mouse_input(seq)
@@ -348,15 +362,15 @@ function mouse_input(seq)
     end
 end
 
-function action_is_scroll(action)
+function action_is_scroll(action, window)
     if action == SCROLL_UP then
         return -1
     elseif action == SCROLL_DOWN then
         return 1
     elseif action == SCROLL_HALFPAGE_UP then
-        return -bit.rshift(nc.LINES, 1)
+        return -bit.rshift(window.lines, 1)
     elseif action == SCROLL_HALFPAGE_DOWN then
-        return bit.rshift(nc.LINES, 1)
+        return bit.rshift(window.lines, 1)
     end
     return nil
 end
@@ -369,6 +383,7 @@ local MAIN_INPUT_TABLE = {
     ['d']               = SCROLL_HALFPAGE_DOWN,
     ['u']               = SCROLL_HALFPAGE_UP,
     ['\027[M...']       = mouse_input,
+    ['\023']            = WINDOW_SWITCH,
 }
 
 -- Make a big tree for matching the inputs in input_table. The leaves are
@@ -465,10 +480,42 @@ function read_buffer(path)
     return buf
 end
 
+function Window(buf, lines, cols, y, x)
+    local self = {}
+    self.buf = buf
+    self.win = nc.newwin(lines, cols, y, x)
+    self.lines, self.cols, self.y, self.x = lines, cols, y, x
+    self.start_line = 0
+
+    self.clear = function() nc.wclear(self.win) end
+    self.refresh = function() nc.wrefresh(self.win) end
+
+    self.set_color = function(color)
+        nc.wcolor_set(self.win, color, nil)
+    end
+
+    self.write_at = function(row, col, str, len)
+        nc.mvwaddnstr(self.win, row, col, str, len)
+    end
+
+    function self.handle_scroll(scroll)
+        local old_start_line = self.start_line
+        self.start_line = self.start_line + scroll
+        self.start_line = math.min(self.start_line, buf.tree.root.nl_count - 1)
+        self.start_line = math.max(self.start_line, 0)
+        -- Scroll screen contents with ncurses. This isn't really
+        -- necessary, since we're going to update the whole screen,
+        -- but should speed things up a bit
+        nc.wscrl(self.win, self.start_line - old_start_line)
+    end
+
+    return self
+end
+
 function run_tui(buf)
     -- ncurses setup
-    local window = nc.initscr()
-    nc.scrollok(window, true)
+    local stdscr = nc.initscr()
+    nc.scrollok(stdscr, true)
     nc.cbreak()
     nc.noecho()
     init_color()
@@ -478,27 +525,42 @@ function run_tui(buf)
     -- Make a prefix tree out of all defined input sequences
     local input_tree = parse_input_table(MAIN_INPUT_TABLE)
 
+    local half = math.floor(nc.LINES / 2)
+    local windows = {
+        Window(buf, half, nc.COLS, 0, 0),
+        Window(buf, nc.LINES - half, nc.COLS, half, 0),
+    }
+    local cur_win = 1
+    local window = windows[cur_win]
+
+    -- Draw all windows
+    function draw_all()
+        for i = 1, #windows do
+            draw_lines(windows[i], i == cur_win)
+        end
+    end
+
+    draw_all()
+
     local start_line = 0
     while true do
         -- Draw screen
-        draw_lines(window, buf, start_line)
+        draw_lines(window, true)
 
         -- Handle input
         local action = get_next_input(input_tree)
 
         if action == QUIT then
             break
+        elseif action == WINDOW_SWITCH then
+            cur_win = cur_win % #windows + 1
+            window = windows[cur_win]
+            -- Draw all windows to refresh out-of-focus status lines
+            draw_all()
         else
-            local scroll = action_is_scroll(action)
+            local scroll = action_is_scroll(action, window)
             if scroll then
-                local old_start_line = start_line
-                start_line = start_line + scroll
-                start_line = math.min(start_line, buf.tree.root.nl_count - 1)
-                start_line = math.max(start_line, 0)
-                -- Scroll screen contents with ncurses. This isn't really
-                -- necessary, since we're going to update the whole screen,
-                -- but should speed things up a bit
-                nc.scrl(start_line - old_start_line)
+                window.handle_scroll(scroll)
             end
         end
     end
