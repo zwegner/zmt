@@ -46,6 +46,10 @@ function str(value)
             s = s .. ('[%s] = %s, '):format(str(k), str(v))
         end
         return '{' .. s .. '}'
+    elseif type(value) == 'string' then
+        -- %q annoyingly replaces '\n' with '\\\n', that is, a backslash and
+        -- then an actual newline. Replace the newline with an 'n'.
+        return ('%q'):format(value):gsub('\n', 'n')
     else
         return tostring(value)
     end
@@ -87,7 +91,7 @@ function iter_lines(tree, line_start, line_end)
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')
                 assert(idx ~= nil)
-                part = piece:sub(1, idx - 1)
+                local part = piece:sub(1, idx - 1)
                 piece = piece:sub(idx + 1)
                 coroutine.yield(line, offset, true, part)
                 offset = offset + idx
@@ -131,7 +135,7 @@ function TSContext()
             -- We don't care about errors now, just pass an unused array
             local dummy = ffi.new('uint32_t[1]')
             local query = ts.ts_query_new(lang, q_text, #q_text, dummy, dummy)
-            self.langs[ftype] = {zmt_parse, lang, query}
+            self.langs[ftype] = {zmt_parse, query}
         end
         return unpack(self.langs[ftype])
     end
@@ -139,7 +143,7 @@ function TSContext()
     function self.parse_buf(buf)
         -- XXX get actual extension/filetype
         local ext = buf.path:sub(-1, -1)
-        local parse, lang, query = self.get_lang(ext)
+        local parse, query = self.get_lang(ext)
 
         -- XXX sticking stuff into buffer object--maybe not the best
         -- abstraction...?
@@ -167,7 +171,7 @@ function TSQuery(query, buf)
 
     function self.reset(offset)
         ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(buf.ast))
-        ts.ts_query_cursor_set_byte_range(cursor, offset, ffi.cast('int32_t', -1))
+        ts.ts_query_cursor_set_byte_range(cursor, offset, -1)
         events = {}
         event_start, event_end = 0, 0
     end
@@ -268,10 +272,17 @@ function draw_lines(window, is_focused)
 
     -- Iterate through all lines in the file
     local last_line = -1
+    local first = true
     for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
             buf.tree.root.nl_count - 1) do
         -- Line number display
         if line ~= last_line then
+            -- Start the query over once we get the first byte offset
+            if first then
+                first = false
+                buf.query.reset(offset)
+            end
+
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
             set_color(HL_TYPE['line_nb'])
             window.write_at(row, 0, line_nb_str, LINE_NB_WIDTH)
@@ -284,11 +295,6 @@ function draw_lines(window, is_focused)
         while #piece > 0 do
             -- Jump the cursor forward until we know the next match
             while offset > event_offset do
-                -- Start the query over from the given byte offset
-                if event_offset == -1 then
-                    buf.query.reset(offset)
-                end
-
                 event_offset, event_hl = buf.query.next_event()
                 if event_hl ~= nil and HL_TYPE[event_hl] then
                     event_hl = HL_TYPE[event_hl]
@@ -326,7 +332,7 @@ function draw_lines(window, is_focused)
             end
             row = row + 1
             col = 0
-            if row >= window.lines - 1 then
+            if row >= window.rows - 1 then
                 break
             end
         end
@@ -368,9 +374,9 @@ function action_is_scroll(action, window)
     elseif action == SCROLL_DOWN then
         return 1
     elseif action == SCROLL_HALFPAGE_UP then
-        return -bit.rshift(window.lines, 1)
+        return -bit.rshift(window.rows, 1)
     elseif action == SCROLL_HALFPAGE_DOWN then
-        return bit.rshift(window.lines, 1)
+        return bit.rshift(window.rows, 1)
     end
     return nil
 end
@@ -480,11 +486,11 @@ function read_buffer(path)
     return buf
 end
 
-function Window(buf, lines, cols, y, x)
+function Window(buf, rows, cols, y, x)
     local self = {}
     self.buf = buf
-    self.win = nc.newwin(lines, cols, y, x)
-    self.lines, self.cols, self.y, self.x = lines, cols, y, x
+    self.win = nc.newwin(rows, cols, y, x)
+    self.rows, self.cols, self.y, self.x = rows, cols, y, x
     self.start_line = 0
 
     function self.clear() nc.wclear(self.win) end
@@ -520,7 +526,7 @@ function run_tui(buffers, dumb_tui)
     nc.noecho()
     init_color()
     -- HACK: #defines aren't available, use -1
-    nc.mousemask(ffi.new('int', -1), nil)
+    nc.mousemask(-1, nil)
 
     -- Make a prefix tree out of all defined input sequences
     local input_tree = parse_input_table(MAIN_INPUT_TABLE)
