@@ -12,6 +12,42 @@ ts = zmt
 nc = zmt
 
 --------------------------------------------------------------------------------
+-- Helper functions ------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+function log(fmt, ...)
+    io.stderr:write(fmt:format(...) .. '\n')
+end
+
+function range(start, stop, step)
+    local result = {}
+    for i = start, stop, step do
+        result[#result + 1] = i
+    end
+    return result
+end
+
+function enum(stop)
+    return unpack(range(1, stop, 1))
+end
+
+function iter_bytes(str)
+    return ipairs({str:byte(1, -1)})
+end
+
+function str(value)
+    if type(value) == 'table' then
+        local s = ''
+        for k, v in pairs(value) do
+            s = s .. ('[%s] = %s, '):format(str(k), str(v))
+        end
+        return '{' .. s .. '}'
+    else
+        return tostring(value)
+    end
+end
+
+--------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
 
@@ -106,7 +142,7 @@ function get_query(language, path)
     return ts.ts_query_new(language, query, #query, dummy, dummy)
 end
 
-function draw_lines(win, tree, ast, query, start_line)
+function draw_lines(window, tree, ast, query, start_line)
     local cursor = ts.ts_query_cursor_new()
     ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(ast))
     local match = ffi.new('TSQueryMatch[1]')
@@ -155,7 +191,7 @@ function draw_lines(win, tree, ast, query, start_line)
 
     function set_color(color)
         color = color > 0 and color or HL_TYPE['default']
-        nc.color_set(color, nil)
+        nc.wcolor_set(window, color, nil)
     end
 
     -- Iterate through all lines in the file
@@ -166,7 +202,7 @@ function draw_lines(win, tree, ast, query, start_line)
         if line ~= last_line then
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
             set_color(HL_TYPE['line_nb'])
-            nc.mvaddstr(row, 0, line_nb_str)
+            nc.mvwaddnstr(window, row, 0, line_nb_str, LINE_NB_WIDTH)
             set_color(cur_hl)
             col = LINE_NB_WIDTH
             last_line = line
@@ -183,7 +219,7 @@ function draw_lines(win, tree, ast, query, start_line)
                 cur_hl = (offset == q_start and hl_type or 0)
                 set_color(cur_hl)
                 local part = piece:sub(1, 1)
-                nc.mvaddnstr(row, col, part, #part)
+                nc.mvwaddnstr(window, row, col, part, #part)
                 piece = piece:sub(2)
                 offset = offset + 1
                 col = col + 1
@@ -192,7 +228,7 @@ function draw_lines(win, tree, ast, query, start_line)
                 local bound = (offset < q_start and q_start or q_end)
                 bound = math.min(bound - offset, #piece)
                 local part = piece:sub(1, bound)
-                nc.mvaddnstr(row, col, part, #part)
+                nc.mvwaddnstr(window, row, col, part, #part)
                 piece = piece:sub(bound + 1)
                 offset = offset + #part
                 col = col + #part
@@ -213,29 +249,192 @@ function draw_lines(win, tree, ast, query, start_line)
         end
     end
 
-    nc.refresh()
+    nc.wrefresh(window)
 
     ts.ts_query_cursor_delete(cursor)
 end
 
--- Read input file
-local chunk = zmt.map_file(arg[1])
-local tree = zmt.dumb_read_data(chunk)
+--------------------------------------------------------------------------------
+-- Input handling --------------------------------------------------------------
+--------------------------------------------------------------------------------
 
--- Set up highlighting
-local ast = zmt.parse_c_tree(tree)
-local query = get_query(ts.tree_sitter_c(), 'ts-query/c.txt')
+-- Action enum
+local QUIT, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
+    SCROLL_HALFPAGE_DOWN, check = enum(100)
+assert(check ~= nil)
 
-function run_tui()
-    local window = nc.initscr()
-    init_color()
-    for i = 0, 10 do
-        local ok, err = pcall(draw_lines, window, tree, ast, query, i)
-        if not ok then break end
-        local c = ffi.C.getchar()
+function mouse_input(seq)
+    local code = seq[4] - 0x20
+    local col = seq[5] - 0x21
+    local row = seq[6] - 0x21
+    if code == 64 then
+        return SCROLL_UP
+    elseif code == 65 then
+        return SCROLL_DOWN
     end
-    nc.endwin()
-    print(ok, err)
 end
 
-run_tui()
+function action_is_scroll(action)
+    if action == SCROLL_UP then
+        return -1
+    elseif action == SCROLL_DOWN then
+        return 1
+    elseif action == SCROLL_HALFPAGE_UP then
+        return -bit.rshift(nc.LINES, 1)
+    elseif action == SCROLL_HALFPAGE_DOWN then
+        return bit.rshift(nc.LINES, 1)
+    end
+    return nil
+end
+
+-- Input sequences
+local MAIN_INPUT_TABLE = {
+    ['QQ']              = QUIT,
+    ['j']               = SCROLL_DOWN,
+    ['k']               = SCROLL_UP,
+    ['d']               = SCROLL_HALFPAGE_DOWN,
+    ['u']               = SCROLL_HALFPAGE_UP,
+    ['\027[M...']       = mouse_input,
+}
+
+-- Make a big tree for matching the inputs in input_table. The leaves are
+-- actions, which is either an enum value from above or a function
+function parse_input_table(input_table)
+    local input_tree = {}
+    for seq, action in pairs(input_table) do
+        local node = input_tree
+        for i, byte in iter_bytes(seq) do
+            -- '.' == 46 is a wildcard
+            if byte == 46 then
+                byte = 0
+            end
+
+            if i == #seq then
+                assert(node[byte] == nil)
+                node[byte] = action
+            else
+                if node[byte] == nil then
+                    node[byte] = {}
+                end
+                assert(type(node[byte]) == 'table')
+                node = node[byte]
+            end
+        end
+    end
+    return input_tree
+end
+
+-- Read input until we parse a command
+function get_next_input(input_tree)
+    -- Store all current input sequence matches
+    local matches = {}
+
+    while true do
+        local c = ffi.C.getchar()
+        local buffer, action = nil, nil
+
+        -- Look through in-progress matches and advance them if this character
+        -- is in the given match sub-table
+        for idx, m in ipairs(matches) do
+            local prefix, match_table = unpack(m)
+            local lookup = match_table[c] or match_table[0]
+            if lookup ~= nil then
+                prefix[#prefix + 1] = c
+
+                if type(lookup) == 'table' then
+                    -- This is a sub-table: add the character to the buffer
+                    -- and match on the sub-table
+                    matches[idx] = {prefix, lookup}
+                elseif lookup ~= nil then
+                    -- Leaf node: set the action and break
+                    buffer, action = prefix, lookup
+                    matches[idx] = nil
+                    break
+                end
+            else
+                -- Non-matching character: delete this match
+                matches[idx] = nil
+            end
+        end
+
+        -- Also check for starting a new match. We do this only after
+        -- advancing previous matches so we don't advance this one again
+        local lookup = input_tree[c] or input_tree[0]
+        if type(lookup) == 'table' then
+            -- New match
+            matches[#matches + 1] = {{c}, lookup}
+        elseif lookup ~= nil then
+            -- Immediate match
+            buffer, action = {c}, lookup
+        end
+
+        -- Check for a successful input match
+        if type(action) == 'function' then
+            action = action(buffer)
+        end
+
+        if action ~= nil then
+            return action
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
+-- Main ------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+function run_tui(tree, ast, query)
+    local window = nc.initscr()
+
+    nc.scrollok(window, true)
+    nc.cbreak()
+    nc.noecho()
+
+    -- HACK: #defines aren't available, use -1
+    nc.mousemask(ffi.new('int', -1), nil)
+
+    -- Make a prefix tree out of all defined input sequences
+    local input_tree = parse_input_table(MAIN_INPUT_TABLE)
+
+    init_color()
+    local start_line = 0
+    while true do
+        -- Draw screen
+        draw_lines(window, tree, ast, query, start_line)
+
+        -- Handle input
+        local action = get_next_input(input_tree)
+
+        if action == QUIT then
+            break
+        else
+            local scroll = action_is_scroll(action)
+            if scroll then
+                local old_start_line = start_line
+                start_line = start_line + scroll
+                start_line = math.min(start_line, tree.root.nl_count - 1)
+                start_line = math.max(start_line, 0)
+                -- Scroll screen contents with ncurses. This isn't really
+                -- necessary, since we're going to update the whole screen,
+                -- but should speed things up a bit
+                nc.scrl(start_line - old_start_line)
+            end
+        end
+    end
+end
+
+function main()
+    -- Read input file
+    local chunk = zmt.map_file(arg[1])
+    local tree = zmt.dumb_read_data(chunk)
+
+    -- Set up highlighting
+    local ast = zmt.parse_c_tree(tree)
+    local query = get_query(ts.tree_sitter_c(), 'ts-query/c.txt')
+
+    local res = {pcall(run_tui, tree, ast, query)}
+    nc.endwin()
+    print(unpack(res))
+end
+
+main()
