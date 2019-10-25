@@ -106,7 +106,111 @@ end
 -- Tree-sitter integration -----------------------------------------------------
 --------------------------------------------------------------------------------
 
--- Terminal escape codes for syntax highlighting
+TS_LANGS = {
+    ['c'] = {zmt.parse_c_tree, ts.tree_sitter_c, 'ts-query/c.txt'},
+}
+
+-- TSContext holds all global tree-sitter context
+function TSContext()
+    local self = {}
+    self.langs = {}
+
+    -- Parse a query file for a given language with tree-sitter
+    self.get_lang = function(ftype)
+        -- Fill in cached entry if it's not there
+        if not self.langs[ftype] then
+            if not TS_LANGS[ftype] then return nil end
+
+            local zmt_parse, ts_lang, query_path = unpack(TS_LANGS[ftype])
+            local lang = ts_lang()
+            local q_text = io.open(query_path):read('*all')
+            -- We don't care about errors now, just pass an unused array
+            local dummy = ffi.new('uint32_t[1]')
+            local query = ts.ts_query_new(lang, q_text, #q_text, dummy, dummy)
+            self.langs[ftype] = {zmt_parse, lang, query}
+        end
+        return unpack(self.langs[ftype])
+    end
+
+    self.parse_buf = function(buf)
+        -- XXX get actual extension/filetype
+        local ext = buf.path:sub(-1, -1)
+        local parse, lang, query = self.get_lang(ext)
+
+        -- XXX sticking stuff into buffer object--maybe not the best
+        -- abstraction...?
+        buf.ast = parse(buf.tree)
+        buf.query = TSQuery(query, buf)
+    end
+
+    return self
+end
+
+-- TSQuery holds information for a given buffer in a particular language
+function TSQuery(query, buf)
+    local self = {}
+    local cursor = ts.ts_query_cursor_new()
+    local match = ffi.new('TSQueryMatch[1]')
+    local cap_idx = ffi.new('uint32_t[1]')
+    local cn_len = ffi.new('uint32_t[1]')
+    local cap_names = {}
+    local events = {}
+    local event_start, event_end = 0, 0
+
+    self.free = function()
+        ts.ts_query_cursor_delete(cursor)
+    end
+
+    self.reset = function(offset)
+        ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(buf.ast))
+        ts.ts_query_cursor_set_byte_range(cursor, offset, ffi.cast('int32_t', -1))
+        events = {}
+        event_start, event_end = 0, 0
+    end
+
+    function get_capture_name(id)
+        if not cap_names[id] then
+            local cn = ts.ts_query_capture_name_for_id(query, id, cn_len)
+            cap_names[id] = ffi.string(cn, cn_len[0])
+        end
+        return cap_names[id]
+    end
+
+    -- Advance the TSQueryCursor to the next capture
+    function next_capture()
+        local ok = ts.ts_query_cursor_next_capture(cursor, match,
+                cap_idx)
+        if not ok then return nil end
+        local capture = match[0].captures[cap_idx[0]]
+
+        -- Return capture name, and start/end byte offsets
+        local cn = get_capture_name(capture.index)
+        local s = ts.ts_node_start_byte(capture.node)
+        local e = ts.ts_node_end_byte(capture.node)
+        return cn, s, e
+    end
+
+    -- Advance the event iterator
+    self.next_event = function()
+        if event_start >= event_end then
+            local cn, s, e = next_capture()
+            if cn == nil then
+                return 1e100, nil
+            end
+            events = {{s, cn}, {e, 'default'}}
+            event_start, event_end = 0, 2
+        end
+        event_start = event_start + 1
+        return unpack(events[event_start])
+    end
+    return self
+end
+
+--------------------------------------------------------------------------------
+-- Drawing ---------------------------------------------------------------------
+--------------------------------------------------------------------------------
+
+-- Color codes for syntax highlighting. Each value is a (fg, bg) pair
 HL_TYPE = {
     ['default']             = {15,   0},
     ['comment']             = {69,   0},
@@ -120,6 +224,9 @@ HL_TYPE = {
     ['line_nb']             = {11, 238},
 }
 
+LINE_NB_FMT = '%4d '
+LINE_NB_WIDTH = 5
+
 function init_color()
     nc.start_color()
     local idx = 1
@@ -131,60 +238,18 @@ function init_color()
     end
 end
 
-LINE_NB_FMT = '%4d '
-LINE_NB_WIDTH = 5
-
--- Parse a query file for a given language with tree-sitter
-function get_query(language, path)
-    local query = ffi.string(io.open(path):read('*all'))
-    -- We don't care about errors now, just pass an unused array
-    local dummy = ffi.new('uint32_t[1]')
-    return ts.ts_query_new(language, query, #query, dummy, dummy)
-end
-
-function draw_lines(window, tree, ast, query, start_line)
-    local cursor = ts.ts_query_cursor_new()
-    ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(ast))
-    local match = ffi.new('TSQueryMatch[1]')
-    local cap_idx = ffi.new('uint32_t[1]')
-    local cn_len = ffi.new('uint32_t[1]')
-    local hl_type
-
+function draw_lines(window, buf, start_line)
     nc.clear()
-
-    -- Advance the TSQueryCursor to the next capture
-    function next_capture()
-        local ok = ts.ts_query_cursor_next_capture(cursor, match, cap_idx)
-        if not ok then
-            return 1e100, 1e100
-        end
-        local capture = match[0].captures[cap_idx[0]]
-
-        -- Get capture type and its highlight
-        local cn = ts.ts_query_capture_name_for_id(query,
-                capture.index, cn_len)
-        cn = ffi.string(cn, cn_len[0])
-        hl_type = HL_TYPE[cn]
-
-        -- No highlighting for this capture: skip it
-        if not hl_type then
-            return next_capture()
-        end
-
-        -- Return start/end byte offsets
-        local s = ts.ts_node_start_byte(capture.node)
-        local e = ts.ts_node_end_byte(capture.node)
-        return s, e
-    end
 
     -- The current highlight value, so we can have syntax regions that
     -- span multiple lines
     local cur_hl = 0
 
-    -- The current tree-sitter query capture start and end byte offsets
+    -- The next highlight event
     -- Start at -1 so we grab the next capture immediately
-    local q_start = -1
-    local q_end = -1
+    local event_offset = -1
+    local event_hl = -1
+    local q_hl
 
     local row = 0
     local col = 0
@@ -196,8 +261,8 @@ function draw_lines(window, tree, ast, query, start_line)
 
     -- Iterate through all lines in the file
     local last_line = -1
-    for line, offset, is_end, piece in iter_lines(tree, start_line,
-            tree.root.nl_count - 1) do
+    for line, offset, is_end, piece in iter_lines(buf.tree, start_line,
+            buf.tree.root.nl_count - 1) do
         -- Line number display
         if line ~= last_line then
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
@@ -211,12 +276,24 @@ function draw_lines(window, tree, ast, query, start_line)
         -- Chop up this piece into parts that share the same highlight
         while #piece > 0 do
             -- Jump the cursor forward until we know the next match
-            if offset > q_end then
-                q_start, q_end = next_capture()
-            -- This piece starts or ends highlight. Output the escape code,
-            -- and one character of source so we make progress.
-            elseif offset == q_start or offset == q_end then
-                cur_hl = (offset == q_start and hl_type or 0)
+            while offset > event_offset do
+                -- Start the query over from the given byte offset
+                if event_offset == -1 then
+                    buf.query.reset(offset)
+                end
+
+                event_offset, event_hl = buf.query.next_event()
+                if event_hl ~= nil and HL_TYPE[event_hl] then
+                    event_hl = HL_TYPE[event_hl]
+                else
+                    event_hl = 0
+                end
+            end
+
+            -- This byte starts or ends a highlight. Change the color output,
+            -- and output one character of source so we make progress.
+            if offset == event_offset then
+                cur_hl = event_hl
                 set_color(cur_hl)
                 local part = piece:sub(1, 1)
                 nc.mvwaddnstr(window, row, col, part, #part)
@@ -224,9 +301,8 @@ function draw_lines(window, tree, ast, query, start_line)
                 offset = offset + 1
                 col = col + 1
             -- Default case: output up until the next highlight change
-            else
-                local bound = (offset < q_start and q_start or q_end)
-                bound = math.min(bound - offset, #piece)
+            elseif event_offset > offset then
+                local bound = math.min(event_offset - offset, #piece)
                 local part = piece:sub(1, bound)
                 nc.mvwaddnstr(window, row, col, part, #part)
                 piece = piece:sub(bound + 1)
@@ -237,9 +313,9 @@ function draw_lines(window, tree, ast, query, start_line)
 
         -- Break out if this piece had a newline
         if is_end then
-            -- Check for a highlight that ends on the newline
-            if offset == q_end then
-                cur_hl = 0
+            -- Check for a highlight that starts/ends on the newline
+            if offset == event_offset then
+                cur_hl = event_hl
             end
             row = row + 1
             col = 0
@@ -250,8 +326,6 @@ function draw_lines(window, tree, ast, query, start_line)
     end
 
     nc.wrefresh(window)
-
-    ts.ts_query_cursor_delete(cursor)
 end
 
 --------------------------------------------------------------------------------
@@ -383,24 +457,31 @@ end
 -- Main ------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-function run_tui(tree, ast, query)
-    local window = nc.initscr()
+function read_buffer(path)
+    local buf = {}
+    buf.path = path
+    buf.chunk = zmt.map_file(path)
+    buf.tree = zmt.dumb_read_data(buf.chunk)
+    return buf
+end
 
+function run_tui(buf)
+    -- ncurses setup
+    local window = nc.initscr()
     nc.scrollok(window, true)
     nc.cbreak()
     nc.noecho()
-
+    init_color()
     -- HACK: #defines aren't available, use -1
     nc.mousemask(ffi.new('int', -1), nil)
 
     -- Make a prefix tree out of all defined input sequences
     local input_tree = parse_input_table(MAIN_INPUT_TABLE)
 
-    init_color()
     local start_line = 0
     while true do
         -- Draw screen
-        draw_lines(window, tree, ast, query, start_line)
+        draw_lines(window, buf, start_line)
 
         -- Handle input
         local action = get_next_input(input_tree)
@@ -412,7 +493,7 @@ function run_tui(tree, ast, query)
             if scroll then
                 local old_start_line = start_line
                 start_line = start_line + scroll
-                start_line = math.min(start_line, tree.root.nl_count - 1)
+                start_line = math.min(start_line, buf.tree.root.nl_count - 1)
                 start_line = math.max(start_line, 0)
                 -- Scroll screen contents with ncurses. This isn't really
                 -- necessary, since we're going to update the whole screen,
@@ -424,15 +505,15 @@ function run_tui(tree, ast, query)
 end
 
 function main()
-    -- Read input file
-    local chunk = zmt.map_file(arg[1])
-    local tree = zmt.dumb_read_data(chunk)
-
     -- Set up highlighting
-    local ast = zmt.parse_c_tree(tree)
-    local query = get_query(ts.tree_sitter_c(), 'ts-query/c.txt')
+    local ts_ctx = TSContext()
 
-    local res = {pcall(run_tui, tree, ast, query)}
+    -- Read input file and parse it
+    local buf = read_buffer(arg[1])
+    ts_ctx.parse_buf(buf)
+
+    -- Run the TUI, catching and printing any errors
+    local res = {pcall(run_tui, buf)}
     nc.endwin()
     print(unpack(res))
 end
