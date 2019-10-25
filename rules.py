@@ -16,8 +16,8 @@ def rules(ctx):
         ['deb', ['-g']],
     ]
 
-    o_files = []
     for [conf_path, conf_flags] in configs:
+        o_files = []
         for [path, flags, files] in src_files:
             for f in files:
                 base, ext = os.path.splitext(f)
