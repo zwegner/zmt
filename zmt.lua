@@ -270,7 +270,7 @@ function draw_lines(window, is_focused)
 
     -- The current highlight value, so we can have syntax regions that
     -- span multiple lines
-    local cur_hl = 0
+    local cur_hl = HL_TYPE['default']
 
     -- The next highlight event
     -- Start at -1 so we grab the next capture immediately
@@ -280,10 +280,6 @@ function draw_lines(window, is_focused)
 
     local row = 0
     local col = 0
-
-    function set_color(color)
-        window.set_color(color > 0 and color or HL_TYPE['default'])
-    end
 
     -- Iterate through all lines in the file
     local last_line = -1
@@ -299,9 +295,8 @@ function draw_lines(window, is_focused)
             end
 
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
-            set_color(HL_TYPE['line_nb'])
-            window.write_at(row, 0, line_nb_str, LINE_NB_WIDTH)
-            set_color(cur_hl)
+            local color = HL_TYPE['line_nb']
+            window.write_at(row, 0, color, line_nb_str, LINE_NB_WIDTH)
             col = LINE_NB_WIDTH
             last_line = line
         end
@@ -314,7 +309,7 @@ function draw_lines(window, is_focused)
                 if event_hl ~= nil and HL_TYPE[event_hl] then
                     event_hl = HL_TYPE[event_hl]
                 else
-                    event_hl = 0
+                    event_hl = HL_TYPE['default']
                 end
             end
 
@@ -322,9 +317,8 @@ function draw_lines(window, is_focused)
             -- and output one character of source so we make progress.
             if offset == event_offset then
                 cur_hl = event_hl
-                set_color(cur_hl)
                 local part = piece:sub(1, 1)
-                window.write_at(row, col, part, #part)
+                window.write_at(row, col, cur_hl, part, #part)
                 piece = piece:sub(2)
                 offset = offset + 1
                 col = col + 1
@@ -332,7 +326,7 @@ function draw_lines(window, is_focused)
             elseif event_offset > offset then
                 local bound = math.min(event_offset - offset, #piece)
                 local part = piece:sub(1, bound)
-                window.write_at(row, col, part, #part)
+                window.write_at(row, col, cur_hl, part, #part)
                 piece = piece:sub(bound + 1)
                 offset = offset + #part
                 col = col + #part
@@ -353,12 +347,12 @@ function draw_lines(window, is_focused)
         end
     end
 
-    window.set_color(is_focused and HL_TYPE['status'] or
-            HL_TYPE['status-unfocused'])
-    --local status_line = (' %*s'):format(window.cols, buf.path)
-    for _, line in iter((' '):rep(window.cols), buf.path) do
-        window.write_at(window.lines - 1, 0, line, #line)
-    end
+    -- Draw status line
+    local color = is_focused and HL_TYPE['status'] or
+            HL_TYPE['status-unfocused']
+    local status_line = buf.path .. (' '):rep(window.cols)
+    status_line = status_line:sub(1, window.cols)
+    window.write_at(window.rows - 1, 0, color, status_line, #status_line)
 
     window.refresh()
 end
@@ -506,16 +500,17 @@ function Window(buf, rows, cols, y, x)
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
+    self.color = nil
     self.start_line = 0
 
     function self.clear() nc.wclear(self.win) end
     function self.refresh() nc.wrefresh(self.win) end
 
-    function self.set_color(color)
-        nc.wcolor_set(self.win, color, nil)
-    end
-
-    function self.write_at(row, col, str, len)
+    function self.write_at(row, col, color, str, len)
+        if color ~= self.color then
+            nc.wcolor_set(self.win, color, nil)
+            self.color = color
+        end
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
