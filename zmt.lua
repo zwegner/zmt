@@ -172,7 +172,7 @@ function TSQuery(query, buf)
         event_start, event_end = 0, 0
     end
 
-    function get_capture_name(id)
+    local function get_capture_name(id)
         if not cap_names[id] then
             local cn = ts.ts_query_capture_name_for_id(query, id, cn_len)
             cap_names[id] = ffi.string(cn, cn_len[0])
@@ -181,7 +181,7 @@ function TSQuery(query, buf)
     end
 
     -- Advance the TSQueryCursor to the next capture
-    function next_capture()
+    local function next_capture()
         local ok = ts.ts_query_cursor_next_capture(cursor, match,
                 cap_idx)
         if not ok then return nil end
