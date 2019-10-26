@@ -253,7 +253,7 @@ end
 HL_TYPE = {
     ['default']             = {15,   0},
     ['comment']             = {69,   0},
-    ['keyword']             = {41,   0},
+    ['keyword']             = {28,   0},
     ['preproc']             = {69,   0},
     ['keyword.storagecls']  = {41,   0},
     ['number']              = {9,    0},
@@ -262,10 +262,11 @@ HL_TYPE = {
     ['type.user']           = {41,   0},
 
     ['line_nb']             = {11, 238},
-    ['status']              = {15,  21},
+    ['status']              = {15,  21, 'bold'},
     ['status-unfocused']    = {0,   15},
 }
-HL_COLORS = {}
+HL_ATTRS = {}
+HL_ATTR_IDS = {}
 
 LINE_NB_FMT = '%4d '
 LINE_NB_WIDTH = 5
@@ -274,10 +275,16 @@ function init_color()
     nc.start_color()
     local idx = 1
     for k, v in pairs(HL_TYPE) do
-        local fg, bg = unpack(v)
+        local fg, bg, ext = unpack(v)
         nc.init_pair(idx, fg, bg)
+        -- HACK: hardcoded bit offsets, since we don't have the #defines here
+        attr = bit.lshift(idx, 8)
+        if ext == 'bold' then
+            attr = attr + bit.lshift(1, 8+13)
+        end
         HL_TYPE[k] = idx
-        HL_COLORS[idx] = {fg, bg}
+        HL_ATTR_IDS[idx] = attr
+        HL_ATTRS[idx] = {fg, bg, ext}
         idx = idx + 1
     end
 end
@@ -314,8 +321,8 @@ function draw_lines(window, is_focused)
             end
 
             line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
-            local color = HL_TYPE['line_nb']
-            window.write_at(row, 0, color, line_nb_str, LINE_NB_WIDTH)
+            local attr = HL_TYPE['line_nb']
+            window.write_at(row, 0, attr, line_nb_str, LINE_NB_WIDTH)
             col = LINE_NB_WIDTH
             last_line = line
         end
@@ -343,7 +350,7 @@ function draw_lines(window, is_focused)
                 end
             end
 
-            -- This byte starts or ends a highlight. Change the color output,
+            -- This byte starts or ends a highlight. Change the attr output,
             -- and output one character of source so we make progress.
             if offset == event_offset then
                 cur_hl = event_hl
@@ -378,11 +385,11 @@ function draw_lines(window, is_focused)
     end
 
     -- Draw status line
-    local color = is_focused and HL_TYPE['status'] or
+    local attr = is_focused and HL_TYPE['status'] or
             HL_TYPE['status-unfocused']
     local status_line = buf.path .. (' '):rep(window.cols)
     status_line = status_line:sub(1, window.cols)
-    window.write_at(window.rows - 1, 0, color, status_line, #status_line)
+    window.write_at(window.rows - 1, 0, attr, status_line, #status_line)
 
     window.refresh()
 end
@@ -530,16 +537,16 @@ function Window(buf, rows, cols, y, x)
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
-    self.color = nil
+    self.attr = nil
     self.start_line = 0
 
     function self.clear() nc.wclear(self.win) end
     function self.refresh() nc.wrefresh(self.win) end
 
-    function self.write_at(row, col, color, str, len)
-        if color ~= self.color then
-            nc.wcolor_set(self.win, color, nil)
-            self.color = color
+    function self.write_at(row, col, attr, str, len)
+        if attr ~= self.attr then
+            nc.wattrset(self.win, HL_ATTR_IDS[attr])
+            self.attr = attr
         end
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
@@ -562,26 +569,28 @@ function NullWindow(buf, rows, cols, y, x)
     local self = {}
     self.buf = buf
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
-    self.color = nil
+    self.attr = nil
     self.start_line = 0
     self.row = 0
 
     function self.clear()
         self.row = 0
     end
-    function self.refresh()
-    end
+    function self.refresh() end
 
-    function self.write_at(row, col, color, str, len)
+    function self.write_at(row, col, attr, s, len)
         if row ~= self.row then
             io.stdout:write('\n')
         end
-        if color ~= self.color then
-            local fg, bg = unpack(HL_COLORS[color])
+        if attr ~= self.attr then
+            local fg, bg, ext = unpack(HL_ATTRS[attr])
             io.stdout:write(('\027[38;5;%dm\027[48;5;%dm'):format(fg, bg))
-            self.color = color
+            if ext == 'bold' then
+                io.stdout:write('\027[1m')
+            end
+            self.attr = attr
         end
-        io.stdout:write(str)
+        io.stdout:write(s)
         self.row = row
     end
 
@@ -597,7 +606,7 @@ end
 function run_tui(buffers, dumb_tui)
     local Window = Window
     if dumb_tui then
-        -- Fake out 
+        -- Fake lines/cols information
         nc.LINES = 25
         nc.COLS = 80
         Window = NullWindow
