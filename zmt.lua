@@ -1,4 +1,7 @@
-ffi = require('ffi')
+require('stdlib')
+local ffi = require('ffi')
+
+local module = {}
 
 -- Load library and preprocessed source
 local zmt = ffi.load('_out/rel/zmt.so')
@@ -6,61 +9,19 @@ local defs = io.open('_out/pre.h')
 ffi.cdef(defs:read('*all'))
 defs:close()
 
+-- Alias for libc
+local C = ffi.C
 -- Alias for tree-sitter
-ts = zmt
+local ts = zmt
 -- Alias for ncurses
-nc = zmt
-
---------------------------------------------------------------------------------
--- Helper functions ------------------------------------------------------------
---------------------------------------------------------------------------------
-
-function log(fmt, ...)
-    io.stderr:write(fmt:format(...) .. '\n')
-end
-
-function range(start, stop, step)
-    local result = {}
-    for i = start, stop, step do
-        result[#result + 1] = i
-    end
-    return result
-end
-
-function enum(stop)
-    return unpack(range(1, stop, 1))
-end
-
-function iter(...)
-    return ipairs({...})
-end
-
-function iter_bytes(str)
-    return ipairs({str:byte(1, -1)})
-end
-
-function str(value)
-    if type(value) == 'table' then
-        local s = ''
-        for k, v in pairs(value) do
-            s = s .. ('[%s] = %s, '):format(str(k), str(v))
-        end
-        return '{' .. s .. '}'
-    elseif type(value) == 'string' then
-        -- %q annoyingly replaces '\n' with '\\\n', that is, a backslash and
-        -- then an actual newline. Replace the newline with an 'n'.
-        return ('%q'):format(value):gsub('\n', 'n')
-    else
-        return tostring(value)
-    end
-end
+local nc = zmt
 
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
 
 -- Iterate through the given piece tree, starting at the given offset
-function iter_nodes(tree, byte_offset, line_offset)
+local function iter_nodes(tree, byte_offset, line_offset)
     byte_offset = byte_offset or 0
     line_offset = line_offset or 0
     return coroutine.wrap(function()
@@ -79,7 +40,7 @@ end
 -- Iterate through pieces, broken up by lines. We yield successive tuples of
 -- the form (line_number, byte_offset, is_end, piece), where is_end marks
 -- pieces that are at the end of their respective lines
-function iter_lines(tree, line_start, line_end)
+local function iter_lines(tree, line_start, line_end)
     return coroutine.wrap(function()
         -- Start a piece iterator at the start line
         local line = line_start
@@ -114,52 +75,12 @@ end
 -- Tree-sitter integration -----------------------------------------------------
 --------------------------------------------------------------------------------
 
-TS_LANGS = {
+local TS_LANGS = {
     ['c'] = {zmt.parse_c_tree, ts.tree_sitter_c, 'ts-query/c.txt'},
 }
 
--- TSContext holds all global tree-sitter context
-function TSContext()
-    local self = {}
-    self.langs = {}
-
-    -- Parse a query file for a given language with tree-sitter
-    function self.get_lang(ftype)
-        -- Fill in cached entry if it's not there
-        if not self.langs[ftype] then
-            if not TS_LANGS[ftype] then return nil end
-
-            local zmt_parse, ts_lang, query_path = unpack(TS_LANGS[ftype])
-            local lang = ts_lang()
-            local q_text = io.open(query_path):read('*all')
-            -- We don't care about errors now, just pass an unused array
-            local dummy = ffi.new('uint32_t[1]')
-            local query = ts.ts_query_new(lang, q_text, #q_text, dummy, dummy)
-            self.langs[ftype] = {zmt_parse, query}
-        end
-        return unpack(self.langs[ftype])
-    end
-
-    function self.parse_buf(buf)
-        -- XXX get actual extension/filetype
-        local ext = buf.path:sub(-1, -1)
-        local parse, query = self.get_lang(ext)
-
-        if not parse then
-            buf.query = TSNullQuery()
-        else
-            -- XXX sticking stuff into buffer object--maybe not the best
-            -- abstraction...?
-            buf.ast = parse(buf.tree)
-            buf.query = TSQuery(query, buf)
-        end
-    end
-
-    return self
-end
-
 -- TSQuery holds information for a given buffer in a particular language
-function TSQuery(query, buf)
+local function TSQuery(query, buf)
     local self = {}
     local cursor = ts.ts_query_cursor_new()
     local match = ffi.new('TSQueryMatch[1]')
@@ -238,10 +159,50 @@ end
 
 -- TSNullQuery conforms to the TSQuery interface but doesn't return any
 -- highlight events. Used for unknown syntax, etc.
-function TSNullQuery()
+local function TSNullQuery()
     local self = {}
     function self.reset(offset) end
     function self.next_event() end
+    return self
+end
+
+-- TSContext holds all global tree-sitter context
+local function TSContext()
+    local self = {}
+    self.langs = {}
+
+    -- Parse a query file for a given language with tree-sitter
+    function self.get_lang(ftype)
+        -- Fill in cached entry if it's not there
+        if not self.langs[ftype] then
+            if not TS_LANGS[ftype] then return nil end
+
+            local zmt_parse, ts_lang, query_path = unpack(TS_LANGS[ftype])
+            local lang = ts_lang()
+            local q_text = io.open(query_path):read('*all')
+            -- We don't care about errors now, just pass an unused array
+            local dummy = ffi.new('uint32_t[1]')
+            local query = ts.ts_query_new(lang, q_text, #q_text, dummy, dummy)
+            self.langs[ftype] = {zmt_parse, query}
+        end
+        return unpack(self.langs[ftype])
+    end
+
+    function self.parse_buf(buf)
+        -- XXX get actual extension/filetype
+        local ext = buf.path:sub(-1, -1)
+        local parse, query = self.get_lang(ext)
+
+        if not parse then
+            buf.query = TSNullQuery()
+        else
+            -- XXX sticking stuff into buffer object--maybe not the best
+            -- abstraction...?
+            buf.ast = parse(buf.tree)
+            buf.query = TSQuery(query, buf)
+        end
+    end
+
     return self
 end
 
@@ -250,7 +211,7 @@ end
 --------------------------------------------------------------------------------
 
 -- Color codes for syntax highlighting. Each value is a (fg, bg) pair
-HL_TYPE = {
+local HL_TYPE = {
     ['default']             = {15,   0},
     ['comment']             = {69,   0},
     ['keyword']             = {28,   0},
@@ -265,13 +226,13 @@ HL_TYPE = {
     ['status']              = {15,  21, 'bold'},
     ['status-unfocused']    = {0,   15},
 }
-HL_ATTRS = {}
-HL_ATTR_IDS = {}
+local HL_ATTRS = {}
+local HL_ATTR_IDS = {}
 
-LINE_NB_FMT = '%4d '
-LINE_NB_WIDTH = 5
+local LINE_NB_FMT = '%4d '
+local LINE_NB_WIDTH = 5
 
-function init_color()
+local function init_color()
     nc.start_color()
     local idx = 1
     for k, v in pairs(HL_TYPE) do
@@ -289,7 +250,7 @@ function init_color()
     end
 end
 
-function draw_lines(window, is_focused)
+local function draw_lines(window, is_focused)
     local buf = window.buf
     window.clear()
 
@@ -403,7 +364,7 @@ local QUIT, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
     SCROLL_HALFPAGE_DOWN, WINDOW_SWITCH, check = enum(100)
 assert(check ~= nil)
 
-function mouse_input(seq)
+local function mouse_input(seq)
     local code = seq[4] - 0x20
     local col = seq[5] - 0x21
     local row = seq[6] - 0x21
@@ -414,7 +375,7 @@ function mouse_input(seq)
     end
 end
 
-function action_is_scroll(action, window)
+local function action_is_scroll(action, window)
     if action == SCROLL_UP then
         return -1
     elseif action == SCROLL_DOWN then
@@ -440,7 +401,7 @@ local MAIN_INPUT_TABLE = {
 
 -- Make a big tree for matching the inputs in input_table. The leaves are
 -- actions, which is either an enum value from above or a function
-function parse_input_table(input_table)
+local function parse_input_table(input_table)
     local input_tree = {}
     for seq, action in pairs(input_table) do
         local node = input_tree
@@ -466,12 +427,12 @@ function parse_input_table(input_table)
 end
 
 -- Read input until we parse a command
-function get_next_input(input_tree)
+local function get_next_input(input_tree)
     -- Store all current input sequence matches
     local matches = {}
 
     while true do
-        local c = ffi.C.getchar()
+        local c = C.getchar()
         local buffer, action = nil, nil
 
         -- Look through in-progress matches and advance them if this character
@@ -524,7 +485,7 @@ end
 -- Main ------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-function read_buffer(path)
+local function read_buffer(path)
     local buf = {}
     buf.path = path
     buf.chunk = zmt.map_file(path)
@@ -532,7 +493,7 @@ function read_buffer(path)
     return buf
 end
 
-function Window(buf, rows, cols, y, x)
+local function Window(buf, rows, cols, y, x)
     local self = {}
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
@@ -565,7 +526,7 @@ function Window(buf, rows, cols, y, x)
     return self
 end
 
-function NullWindow(buf, rows, cols, y, x)
+local function NullWindow(buf, rows, cols, y, x)
     local self = {}
     self.buf = buf
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
@@ -603,7 +564,7 @@ function NullWindow(buf, rows, cols, y, x)
     return self
 end
 
-function run_tui(buffers, dumb_tui)
+local function run_tui(buffers, dumb_tui)
     local Window = Window
     if dumb_tui then
         -- Fake lines/cols information
@@ -673,7 +634,7 @@ function run_tui(buffers, dumb_tui)
     end
 end
 
-function main()
+function module.main(arg)
     -- Set up highlighting
     local ts_ctx = TSContext()
 
@@ -695,4 +656,4 @@ function main()
     print(unpack(res))
 end
 
-main()
+return module
