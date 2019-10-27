@@ -7,23 +7,32 @@
 
 #include "zmt.h"
 
+// XXX kinda dumb
+chunk_t *current_chunk;
+
 ////////////////////////////////////////////////////////////////////////////////
 // Chunks / Files //////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-chunk_t *new_chunk(uint8_t *data, size_t len) {
-    chunk_t *chunk = (chunk_t *)calloc(1, sizeof(chunk_t));
-    chunk->data = data;
+chunk_t *create_chunk(uint8_t *data, size_t len) {
+    chunk_t *chunk;
+    // If no data pointer is passed in, allocate <len> bytes at the end of this
+    // chunk and keep it embedded, to save an allocation.
+    if (!data) {
+        chunk = (chunk_t *)calloc(1, sizeof(chunk_t) + len);
+        chunk->data = chunk->embedded_data;
+        chunk->flags |= CHUNK_EMBEDDED;
+    }
+    // Otherwise, allocate just the minimal struct. We mark all bytes as being
+    // used here by default.
+    else {
+        chunk = (chunk_t *)calloc(1, sizeof(chunk_t));
+        chunk->data = data;
+        chunk->used = len;
+    }
     chunk->len = len;
-    chunk->used = len;
     chunk->ref_count = 1;
-    return chunk;
-}
 
-chunk_t *alloc_chunk(size_t len) {
-    uint8_t *data = (uint8_t *)calloc(len, 1);
-    chunk_t *chunk = new_chunk(data, len);
-    chunk->used = 0;
     return chunk;
 }
 
@@ -34,33 +43,40 @@ chunk_t *map_file(const char *path) {
 
     uint8_t *data = (uint8_t *)mmap(NULL, size, PROT_READ,
             MAP_FILE | MAP_PRIVATE, fileno(f), 0);
+    assert(data);
 
     fclose(f);
 
-    return new_chunk((uint8_t *)data, size);
+    return create_chunk((uint8_t *)data, size);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Nodes ///////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-meta_tree_t *new_tree() {
-    meta_tree_t *node = (meta_tree_t *)calloc(1, sizeof(meta_tree_t));
-    node->ref_count = 1;
-    return node;
+meta_tree_t *create_tree() {
+    meta_tree_t *tree = (meta_tree_t *)calloc(1, sizeof(meta_tree_t));
+    tree->ref_count = 1;
+    return tree;
 }
 
-meta_node_t *new_node() {
+meta_node_t *create_node() {
     meta_node_t *node = (meta_node_t *)calloc(1, sizeof(meta_node_t));
     node->flags = NODE_INNER;
     node->ref_count = 1;
     return node;
 }
 
-meta_node_t *new_leaf() {
-    meta_node_t *node = new_node();
+meta_node_t *create_leaf() {
+    meta_node_t *node = create_node();
     node->flags = NODE_LEAF;
     return node;
+}
+
+static meta_node_t *duplicate_node(meta_node_t *node) {
+    meta_node_t *new_node = (meta_node_t *)malloc(sizeof(meta_node_t));
+    *new_node = *node;
+    return new_node;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -80,6 +96,8 @@ static void set_leaf_meta_data(meta_node_t *node) {
 
 static void set_inner_meta_data(meta_node_t *node) {
     assert(node->flags & NODE_INNER);
+    node->byte_count = 0;
+    node->nl_count = 0;
     for (int32_t x = 0; x < MAX_CHILDREN; x++) {
         if (node->inner.children[x]) {
             node->byte_count += node->inner.children[x]->byte_count;
@@ -88,14 +106,29 @@ static void set_inner_meta_data(meta_node_t *node) {
     }
 }
 
+void verify_node(meta_node_t *node) {
+    uint32_t old_byte_count = node->byte_count;
+    int32_t old_nl_count = node->nl_count;
+    if (node->flags & NODE_LEAF)
+        set_leaf_meta_data(node);
+    else {
+        for (int32_t x = 0; x < MAX_CHILDREN; x++)
+            if (node->inner.children[x])
+                verify_node(node->inner.children[x]);
+        set_inner_meta_data(node);
+    }
+    assert(old_byte_count == node->byte_count);
+    assert(old_nl_count == node->nl_count);
+}
+
 meta_tree_t *read_data(chunk_t *chunk) {
     // Create tree
-    meta_tree_t *tree = new_tree();
+    meta_tree_t *tree = create_tree();
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
     // Create one leaf node with all data
-    meta_node_t *node = new_leaf();
+    meta_node_t *node = create_leaf();
     node->leaf.start = 0;
     node->leaf.end = chunk->len;
     node->leaf.chunk_data = chunk->data;
@@ -110,7 +143,7 @@ meta_tree_t *read_data(chunk_t *chunk) {
 // Read data, but create a big dumb tree with lots of nodes for it
 meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
     if (end - start < 32) {
-        meta_node_t *node = new_leaf();
+        meta_node_t *node = create_leaf();
         node->leaf.start = start;
         node->leaf.end = end;
         node->leaf.chunk_data = chunk->data;
@@ -118,7 +151,7 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
         chunk->ref_count++;
         return node;
     } else {
-        meta_node_t *parent = new_node();
+        meta_node_t *parent = create_node();
         uint32_t s = start;
         for (int i = 0; i < MAX_CHILDREN; i++) {
             uint32_t mid = start + (end - start) * (i+1) / MAX_CHILDREN;
@@ -132,7 +165,7 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
 
 meta_tree_t *dumb_read_data(chunk_t *chunk) {
     // Create tree
-    meta_tree_t *tree = new_tree();
+    meta_tree_t *tree = create_tree();
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
@@ -321,6 +354,67 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
 
     // Default case: just start the normal iteration
     return iter_next(iter);
+}
+
+// From inside an iterator, create a new tree with the current node replaced.
+// This is a slightly awkward API perhaps, but we want to use most of the same
+// iterator machinery to find a particular node, and keep the iterator stack
+// around so we have the full path from root to leaf.
+// This modifies the iterator in-place to continue iteration from the new
+// tree.
+meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node) {
+    meta_tree_t *tree = create_tree();
+
+    // Walk back up the stack, copying each parent node in succession
+    for (uint32_t depth = iter->depth; depth > 0; depth--) {
+        meta_iter_frame_t *frame = &iter->frame[depth - 1];
+        meta_node_t *old_parent = frame->node;
+        assert(frame->state == ITER_CHILDREN);
+        assert(old_parent->flags & NODE_INNER);
+
+        // Copy this node, replace the current child, and bump refcounts
+        meta_node_t *new_parent = duplicate_node(old_parent);
+        assert(frame->idx > 0);
+        new_parent->inner.children[frame->idx - 1] = new_node;
+        for (int32_t x = 0; x < MAX_CHILDREN; x++)
+            if (new_parent->inner.children[x])
+                new_parent->inner.children[x]->ref_count++;
+
+        // Update metadata
+        set_inner_meta_data(new_parent);
+
+        // Replace this frame's current node, and keep it around to replace
+        // in the parent frame
+        frame->node = new_node = new_parent;
+    }
+
+    // XXX update chunk map, when we care about it...
+
+    tree->root = new_node;
+    iter->tree = tree;
+    return tree;
+}
+
+// XXX dumb
+meta_tree_t *mangle_tree(meta_tree_t *tree, uint64_t offset,
+        const uint8_t *data, uint64_t len) {
+    // Copy data into chunk
+    if (!current_chunk)
+        current_chunk = create_chunk(NULL, 0x10000);
+    assert(current_chunk->used + len < current_chunk->len);
+    memcpy((uint8_t *)&current_chunk->data[current_chunk->used], data, len);
+
+    meta_node_t *new_node = create_leaf();
+    new_node->leaf.chunk_data = current_chunk->data;
+    new_node->leaf.start = current_chunk->used;
+    new_node->leaf.end = current_chunk->used + len;
+    set_leaf_meta_data(new_node);
+    current_chunk->ref_count++;
+
+    meta_iter_t iter[1];
+    (void)iter_start(iter, tree, offset, 0);
+
+    return replace_current_node(iter, new_node);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

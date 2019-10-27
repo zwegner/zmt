@@ -10,7 +10,7 @@ def rules(ctx):
         ('tree-sitter-c/src', ts_inc, ['parser.c']),
     ]
 
-    c_flags = ['-fcolor-diagnostics']
+    c_flags = ['-fcolor-diagnostics', '-Wall']
     configs = [
         ['rel', ['-O3']],
         ['deb', ['-g']],

@@ -101,10 +101,21 @@ typedef struct {
 // Prototypes
 chunk_t *map_file(const char *path);
 meta_tree_t *read_data(chunk_t *chunk);
+void verify_node(meta_node_t *node);
+
+// Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree);
 meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         uint64_t byte_offset, uint64_t line_offset);
 meta_node_t *iter_next(meta_iter_t *iter);
+
+// Mutation
+meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node);
+
+// XXX remove this
+meta_tree_t *mangle_tree(meta_tree_t *tree, uint64_t offset,
+        const uint8_t *data, uint64_t len);
+
 // XXX remove this
 meta_tree_t *dumb_read_data(chunk_t *chunk);
 
