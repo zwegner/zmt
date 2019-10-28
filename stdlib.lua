@@ -1,7 +1,12 @@
 -- "stdlib" stuff that is generic enough to just stick in global scope
 
-function log(fmt, ...)
+function logf(fmt, ...)
     io.stderr:write(fmt:format(...) .. '\n')
+end
+
+function log(...)
+    local fmt = ('%s '):rep(#{...})
+    logf(fmt, ...)
 end
 
 function range(start, stop, step)
