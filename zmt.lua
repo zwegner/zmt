@@ -85,6 +85,35 @@ local function iter_lines(tree, line_start, line_end)
     end)
 end
 
+local function print_node(tree, node, depth)
+    local prefix = ('%s %s(%s) b=%s n=%s'):format(
+            ('  '):rep(depth), node, node.flags, node.byte_count, node.nl_count)
+
+    if bit.band(node.flags, NODE_LEAF + NODE_FILLER) ~= 0 then
+        if bit.band(node.flags, NODE_FILLER) ~= 0 then
+            prefix = prefix .. ' FILLER'
+        end
+        local l = node.leaf
+        local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
+        log(prefix, str(data))
+    elseif bit.band(node.flags, NODE_HOLE) ~= 0 then
+        log(prefix, 'HOLE')
+        print_node(tree, tree.filler_node[0], depth+1)
+    else
+        log(prefix)
+        for i = 0, MAX_CHILDREN-1 do
+            if node.inner.children[i] then
+                print_node(tree, node.inner.children[i], depth+1)
+            end
+        end
+    end
+end
+
+local function print_tree(tree)
+    log('\n\nTREE')
+    print_node(tree, tree.root, 0)
+end
+
 --------------------------------------------------------------------------------
 -- Tree-sitter integration -----------------------------------------------------
 --------------------------------------------------------------------------------
