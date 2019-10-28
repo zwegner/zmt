@@ -214,6 +214,7 @@ typedef struct {
 chunk_t *map_file(const char *path);
 meta_tree_t *read_data(chunk_t *chunk);
 void verify_node(meta_node_t *node);
+uint64_t get_tree_line_count(meta_tree_t *tree);
 
 // Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree);

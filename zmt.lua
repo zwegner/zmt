@@ -346,7 +346,7 @@ local function draw_lines(window, is_focused)
     local last_line = -1
     local first = true
     for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
-            buf.tree.root.nl_count - 1) do
+            buf.get_line_count() - 1) do
         -- Line number display
         if line ~= last_line then
             -- Start the query over once we get the first byte offset
@@ -595,12 +595,16 @@ end
 -- Main ------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-local function read_buffer(path)
-    local buf = {}
-    buf.path = path
-    buf.chunk = zmt.map_file(path)
-    buf.tree = zmt.dumb_read_data(buf.chunk)
-    return buf
+local function Buffer(path)
+    local self = {}
+    self.path = path
+    self.chunk = zmt.map_file(path)
+    self.tree = zmt.dumb_read_data(self.chunk)
+
+    function self.get_line_count()
+        return zmt.get_tree_line_count(self.tree)
+    end
+    return self
 end
 
 local function get_scroll_amount(action, window)
@@ -756,7 +760,7 @@ local function run_tui(paths, dumb_tui)
     -- Read input files and parse them
     local buffers = {}
     for _, path in ipairs(paths) do
-        local buf = read_buffer(path)
+        local buf = Buffer(path)
         ts_ctx.parse_buf(buf)
         buffers[#buffers + 1] = buf
     end
