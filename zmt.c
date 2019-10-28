@@ -422,6 +422,17 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
     return iter_next(iter);
 }
 
+// This is a helper function that combines the line_offset and byte_offset
+// functionalities from iter_start() together, to jump to a byte offset from
+// the start of a line. This needs to be done with two jumps, since the actual
+// jump destination could be arbitrarily far in the tree from the start of the
+// line. Maybe this could be optimized a bit...
+meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
+        uint64_t line_offset, uint64_t byte_offset) {
+    (void)iter_start(iter, tree, 0, line_offset);
+    return iter_start(iter, tree, iter->start_offset.byte + byte_offset, 0);
+}
+
 // From inside an iterator, create a new tree with the current node replaced.
 // This is a slightly awkward API perhaps, but we want to use most of the same
 // iterator machinery to find a particular node, and keep the iterator stack
@@ -544,8 +555,8 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
 
 // Helper function: split the tree at the given offset, and insert the
 // given bytes into the filler node
-meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
-        const uint8_t *data, uint64_t len) {
+meta_tree_t *insert_bytes_at_current_node(meta_iter_t *iter, meta_tree_t *tree,
+        meta_node_t *node, const uint8_t *data, uint64_t len) {
     // Copy data into chunk
     // XXX chunk management
     if (!current_chunk)
@@ -555,9 +566,7 @@ meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
 
     // XXX this is suboptimal, we should check for appending to the
     // filler node
-    meta_iter_t iter[1];
-    meta_node_t *old_node = iter_start(iter, tree, offset, 0);
-    tree = split_current_node(iter, old_node);
+    tree = split_current_node(iter, node);
 
     meta_node_t *new_node = tree->filler_node;
     new_node->leaf.chunk_data = current_chunk->data;
@@ -567,6 +576,16 @@ meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
     current_chunk->ref_count++;
 
     return tree;
+}
+
+// Helper function: split the tree at the given offset, and insert the
+// given bytes into the filler node
+meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
+        const uint8_t *data, uint64_t len) {
+    meta_iter_t iter[1];
+    meta_node_t *old_node = iter_start(iter, tree, offset, 0);
+    return insert_bytes_at_current_node(iter, tree, old_node,
+            data, len);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

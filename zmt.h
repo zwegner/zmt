@@ -217,9 +217,11 @@ void verify_node(meta_node_t *node);
 
 // Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree);
+meta_node_t *iter_next(meta_iter_t *iter);
 meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         uint64_t byte_offset, uint64_t line_offset);
-meta_node_t *iter_next(meta_iter_t *iter);
+meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
+        uint64_t line_offset, uint64_t byte_offset);
 
 // Mutation
 meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
@@ -227,6 +229,8 @@ meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
 
 // XXX experimental/test apis
 meta_tree_t *patch_tree_hole(meta_tree_t *tree);
+meta_tree_t *insert_bytes_at_current_node(meta_iter_t *iter, meta_tree_t *tree,
+        meta_node_t *node, const uint8_t *data, uint64_t len);
 meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
         const uint8_t *data, uint64_t len);
 meta_tree_t *dumb_read_data(chunk_t *chunk);
