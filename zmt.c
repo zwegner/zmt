@@ -28,6 +28,8 @@ static const meta_node_t HOLE_NODE_SINGLETON = {
     },
 };
 
+#define MAX(a, b)       ((a) >= (b) ? (a) : (b))
+
 ////////////////////////////////////////////////////////////////////////////////
 // Chunks / Files //////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -386,27 +388,52 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         iter->frame[0].state = ITER_JUMP;
         iter->desired_offset = (offset_t) { byte_offset, line_offset };
 
-        // See if we're jumping inside or past the hole. If so, we fake the offset
-        // to the iterator jump, since the size of the hole is not updated in the
-        // tree metadata.
+        // See if we're jumping inside or past the hole. If so, we fake the
+        // offset to the iterator jump, since the size of the hole is not
+        // updated in the tree metadata.
+        offset_t hole_offset = { 0, 0 };
         if (tree->has_hole) {
-            // Subtract one from the actual size of the filler node, since the
-            // hole takes up one byte/newline of space in the metadata tree.
-            if (byte_offset > tree->hole_offset.byte)
-                iter->desired_offset.byte -= tree->filler_node->byte_count - 1;
-            if (line_offset > tree->hole_offset.line)
-                iter->desired_offset.line -= tree->filler_node->nl_count - 1;
+            if (byte_offset > tree->hole_offset.byte) {
+                // Jumping inside the filler node: make the iterator jump to
+                // the hole node
+                if (byte_offset < tree->hole_offset.byte +
+                        tree->filler_node->byte_count)
+                    iter->desired_offset.byte = tree->hole_offset.byte;
+                // Past the filler node: subtract an offset to account for
+                // the size of the filler node, which isn't accounted for
+                // in the main tree, and add one, to account for the size
+                // of the hole node
+                else {
+                    hole_offset.byte = tree->filler_node->byte_count - 1;
+                    iter->desired_offset.byte -= hole_offset.byte;
+                }
+            }
+            // Same exact logic as above, except for lines
+            if (line_offset > tree->hole_offset.line) {
+                if (line_offset < tree->hole_offset.line +
+                        tree->filler_node->nl_count)
+                    iter->desired_offset.line = tree->hole_offset.line;
+                else {
+                    hole_offset.line = tree->filler_node->nl_count - 1;
+                    iter->desired_offset.line -= hole_offset.line;
+                }
+            }
         }
 
         meta_node_t *node = iter_next(iter);
         if (!node)
             return NULL;
 
+        iter->start_offset.byte += hole_offset.byte;
+        iter->start_offset.line += hole_offset.line;
+        iter->end_offset.byte += hole_offset.byte;
+        iter->end_offset.line += hole_offset.line;
+
         uint64_t offset = 0;
         if (byte_offset) {
             assert(!line_offset);
-            assert(iter->start_offset.byte <= byte_offset);
-            assert(iter->end_offset.byte > byte_offset);
+            assert(byte_offset >= iter->start_offset.byte);
+            assert(byte_offset < iter->end_offset.byte);
 
             // Exact match
             if (iter->start_offset.byte == byte_offset)
@@ -416,8 +443,8 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
             offset = byte_offset - iter->start_offset.byte;
         } else {
             assert(line_offset);
-            assert(iter->start_offset.line <= line_offset);
-            assert(iter->end_offset.line >= line_offset);
+            assert(line_offset >= iter->start_offset.line);
+            assert(line_offset <= iter->end_offset.line);
 
             // Exact match
             if (iter->start_offset.line == line_offset)
