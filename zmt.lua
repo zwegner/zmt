@@ -30,9 +30,39 @@ local ts = zmt
 -- Alias for ncurses
 local nc = zmt
 
+-- Editor definitions
+
+-- Mode enum
+local NORMAL_MODE, INSERT_MODE, check = enum(5)
+assert(check ~= nil)
+
+-- Action enum
+local
+    -- Generic/mode switching commands
+    ENTER_NORMAL, ENTER_INSERT, QUIT,
+    -- Insert mode
+    INSERT_CHAR,
+    -- Cursor
+    CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
+    -- Scrolling
+    SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP, SCROLL_HALFPAGE_DOWN,
+    -- Mouse events
+    MOUSE_DOWN,
+    -- Window movement
+    WINDOW_NEXT, WINDOW_PREV,
+    check = enum(100)
+assert(check ~= nil)
+
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
+
+-- HACK
+local NODE_INNER  = bit.lshift(1, zmt.node_inner_bit)
+local NODE_LEAF   = bit.lshift(1, zmt.node_leaf_bit)
+local NODE_HOLE   = bit.lshift(1, zmt.node_hole_bit)
+local NODE_FILLER = bit.lshift(1, zmt.node_filler_bit)
+local MAX_CHILDREN = 2
 
 -- Iterate through the given piece tree, starting at the given offset
 local function iter_nodes(tree, byte_offset, line_offset)
@@ -120,6 +150,7 @@ end
 
 local TS_LANGS = {
     ['c'] = {zmt.parse_c_tree, ts.tree_sitter_c, 'ts-query/c.txt'},
+    ['h'] = {zmt.parse_c_tree, ts.tree_sitter_c, 'ts-query/c.txt'},
 }
 
 -- TSQuery holds information for a given buffer in a particular language
@@ -268,6 +299,7 @@ local HL_TYPE = {
     ['line_nb']             = {11, 238},
     ['status']              = {15,  21, 'bold'},
     ['status-unfocused']    = {0,   15},
+    ['mode_line']           = {15,   0, 'bold'},
 }
 local HL_ATTRS = {}
 local HL_ATTR_IDS = {}
@@ -276,7 +308,6 @@ local LINE_NB_FMT = '%4d '
 local LINE_NB_WIDTH = 5
 
 local function init_color()
-    nc.start_color()
     local idx = 1
     for k, v in pairs(HL_TYPE) do
         local fg, bg, ext = unpack(v)
@@ -398,48 +429,78 @@ local function draw_lines(window, is_focused)
     window.refresh()
 end
 
+local function draw_mode_line(window, mode)
+    -- Draw status line
+    local attr = HL_TYPE['mode_line']
+    local mode_line = (mode == INSERT_MODE and '-- INSERT --' or '')
+    window.write_at(window.rows - 1, 0, attr, mode_line, #mode_line)
+    window.end_row()
+    window.refresh()
+end
+
 --------------------------------------------------------------------------------
 -- Input handling --------------------------------------------------------------
 --------------------------------------------------------------------------------
 
--- Action enum
-local QUIT, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
-    SCROLL_HALFPAGE_DOWN, WINDOW_SWITCH, check = enum(100)
-assert(check ~= nil)
-
-local function mouse_input(seq)
-    local code = seq[4] - 0x20
-    local col = seq[5] - 0x21
-    local row = seq[6] - 0x21
-    if code == 64 then
-        return SCROLL_UP
+local function handle_mouse_input(buf)
+    local code = buf[4] - 0x20
+    local col = buf[5] - 0x21
+    local row = buf[6] - 0x21
+    log(code, row, col)
+    -- XXX hardcoded bits
+    if code == 0 or col == 1 then
+        return MOUSE_DOWN, {row, col}
+    elseif code == 64 then
+        return SCROLL_UP, {row, col}
     elseif code == 65 then
-        return SCROLL_DOWN
+        return SCROLL_DOWN, {row, col}
     end
 end
 
-local function action_is_scroll(action, window)
-    if action == SCROLL_UP then
-        return -1
-    elseif action == SCROLL_DOWN then
-        return 1
-    elseif action == SCROLL_HALFPAGE_UP then
-        return -bit.rshift(window.rows, 1)
-    elseif action == SCROLL_HALFPAGE_DOWN then
-        return bit.rshift(window.rows, 1)
+local function handle_insert_char(buf)
+    assert(#buf == 1)
+    -- Ignore all non-ASCII and control characters except \n
+    if (buf[1] >= 32 and buf[1] < 127) or buf[1] == 10 then
+        return INSERT_CHAR, buf[1]
     end
-    return nil
 end
 
--- Input sequences
-local MAIN_INPUT_TABLE = {
-    ['QQ']              = QUIT,
-    ['j']               = SCROLL_DOWN,
-    ['k']               = SCROLL_UP,
-    ['d']               = SCROLL_HALFPAGE_DOWN,
-    ['u']               = SCROLL_HALFPAGE_UP,
-    ['\027[M...']       = mouse_input,
-    ['\023']            = WINDOW_SWITCH,
+-- HACKy helper functions that rely on action enum ordering
+
+local function action_is_scroll(action)
+    return action >= SCROLL_UP and action <= SCROLL_HALFPAGE_DOWN
+end
+local function action_is_cursor(action)
+    return action >= CURSOR_UP and action <= CURSOR_RIGHT
+end
+local function action_is_window_switch(action)
+    return action >= WINDOW_NEXT and action <= WINDOW_PREV
+end
+
+local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
+
+-- Input sequences, per mode
+
+local INPUT_TABLES = {
+    [NORMAL_MODE] = {
+        ['QQ']              = QUIT,
+        ['h']               = CURSOR_LEFT,
+        ['j']               = CURSOR_DOWN,
+        ['k']               = CURSOR_UP,
+        ['l']               = CURSOR_RIGHT,
+        ['i']               = ENTER_INSERT,
+        [CTRL('E')]         = SCROLL_DOWN,
+        [CTRL('Y')]         = SCROLL_UP,
+        [CTRL('D')]         = SCROLL_HALFPAGE_DOWN,
+        [CTRL('U')]         = SCROLL_HALFPAGE_UP,
+        ['\027[M...']       = handle_mouse_input,
+        [CTRL('N')]         = WINDOW_NEXT,
+        [CTRL('P')]         = WINDOW_PREV,
+    },
+    [INSERT_MODE] = {
+        ['\027']            = ENTER_NORMAL,
+        ['.']               = handle_insert_char,
+    }
 }
 
 -- Make a big tree for matching the inputs in input_table. The leaves are
@@ -469,6 +530,12 @@ local function parse_input_table(input_table)
     return input_tree
 end
 
+-- Make a prefix tree out of all defined input sequences, one for each mode
+local INPUT_TREES = {}
+for mode, table in pairs(INPUT_TABLES) do
+    INPUT_TREES[mode] = parse_input_table(table)
+end
+
 -- Read input until we parse a command
 local function get_next_input(input_tree)
     -- Store all current input sequence matches
@@ -476,7 +543,7 @@ local function get_next_input(input_tree)
 
     while true do
         local c = C.getchar()
-        local buffer, action = nil, nil
+        local buffer, action, data = nil, nil, nil
 
         -- Look through in-progress matches and advance them if this character
         -- is in the given match sub-table
@@ -515,11 +582,11 @@ local function get_next_input(input_tree)
 
         -- Check for a successful input match
         if type(action) == 'function' then
-            action = action(buffer)
+            action, data = action(buffer)
         end
 
         if action ~= nil then
-            return action
+            return action, buffer, data
         end
     end
 end
@@ -536,16 +603,63 @@ local function read_buffer(path)
     return buf
 end
 
+local function get_scroll_amount(action, window)
+    if action == SCROLL_UP then
+        return -1
+    elseif action == SCROLL_DOWN then
+        return 1
+    elseif action == SCROLL_HALFPAGE_UP then
+        return -bit.rshift(window.rows, 1)
+    elseif action == SCROLL_HALFPAGE_DOWN then
+        return bit.rshift(window.rows, 1)
+    end
+end
+
+local function get_cursor_movement(action)
+    if action == CURSOR_UP then
+        return -1, 0
+    elseif action == CURSOR_DOWN then
+        return 1, 0
+    elseif action == CURSOR_LEFT then
+        return 0, -1
+    elseif action == CURSOR_RIGHT then
+        return 0, 1
+    end
+end
+
 local function Window(buf, rows, cols, y, x)
     local self = {}
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
+    self.curs_line, self.curs_off = 0, 0
+    self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line = 0
 
-    function self.clear() nc.wclear(self.win) end
-    function self.refresh() nc.wrefresh(self.win) end
+    function self.clear()
+        nc.werase(self.win)
+    end
+    function self.end_row()
+        nc.wclrtoeol(self.win)
+    end
+    function self.refresh()
+        nc.wmove(self.win, self.curs_row, self.curs_col + LINE_NB_WIDTH)
+        nc.wrefresh(self.win)
+    end
+
+    function self.handle_cursor(action)
+        local dy, dx = get_cursor_movement(action)
+        self.curs_row = math.max(0, math.min(self.curs_row + dy, self.rows - 1))
+        self.curs_col = math.max(0, math.min(self.curs_col + dx, self.cols - 1))
+        -- XXX dumb crappy hack logic
+        self.curs_line = self.start_line + self.curs_row
+        self.curs_off = self.curs_col
+    end
+
+    function self.get_cursor()
+        return self.curs_line, self.curs_off
+    end
 
     function self.write_at(row, col, attr, str, len)
         if attr ~= self.attr then
@@ -555,15 +669,17 @@ local function Window(buf, rows, cols, y, x)
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
-    function self.handle_scroll(scroll)
-        local old_start_line = self.start_line
-        self.start_line = self.start_line + scroll
-        self.start_line = math.min(self.start_line, buf.tree.root.nl_count - 1)
-        self.start_line = math.max(self.start_line, 0)
+    function self.handle_scroll(action)
+        local scroll = get_scroll_amount(action, self)
+        local start_line = self.start_line
+        start_line = start_line + scroll
+        start_line = math.min(start_line, buf.tree.root.nl_count - 1)
+        start_line = math.max(start_line, 0)
         -- Scroll screen contents with ncurses. This isn't really
         -- necessary, since we're going to update the whole screen,
         -- but should speed things up a bit
-        nc.wscrl(self.win, self.start_line - old_start_line)
+        nc.wscrl(self.win, start_line - self.start_line)
+        self.start_line = start_line
     end
 
     return self
@@ -580,11 +696,15 @@ local function NullWindow(buf, rows, cols, y, x)
     function self.clear()
         self.row = 0
     end
+    function self.end_row()
+        io.stdout:write('\n')
+    end
     function self.refresh() end
 
     function self.write_at(row, col, attr, s, len)
         if row ~= self.row then
             io.stdout:write('\n')
+            self.row = row
         end
         if attr ~= self.attr then
             local fg, bg, ext = unpack(HL_ATTRS[attr])
@@ -595,10 +715,10 @@ local function NullWindow(buf, rows, cols, y, x)
             self.attr = attr
         end
         io.stdout:write(s)
-        self.row = row
     end
 
-    function self.handle_scroll(scroll)
+    function self.handle_scroll(action)
+        local scroll = get_scroll_amount(action, self)
         self.start_line = self.start_line + scroll
         self.start_line = math.min(self.start_line, buf.tree.root.nl_count - 1)
         self.start_line = math.max(self.start_line, 0)
@@ -607,38 +727,65 @@ local function NullWindow(buf, rows, cols, y, x)
     return self
 end
 
-local function run_tui(buffers, dumb_tui)
+local function run_tui(paths, dumb_tui)
     local Window = Window
+    local rows, cols
     if dumb_tui then
         -- Fake lines/cols information
-        nc.LINES = 25
-        nc.COLS = 80
+        rows = 25 - 1
+        cols = 80
         Window = NullWindow
     else
         -- ncurses setup
         local stdscr = nc.initscr()
         nc.scrollok(stdscr, true)
-        nc.cbreak()
+        nc.raw()
         nc.noecho()
+        nc.nonl()
+        nc.start_color()
         -- HACK: #defines aren't available, use -1
         nc.mousemask(ffi.cast('int', -1), nil)
+        rows = nc.LINES - 1
+        cols = nc.COLS
     end
     init_color()
 
-    -- Make a prefix tree out of all defined input sequences
-    local input_tree = parse_input_table(MAIN_INPUT_TABLE)
+    -- Set up highlighting
+    local ts_ctx = TSContext()
+
+    -- Read input files and parse them
+    local buffers = {}
+    for _, path in ipairs(paths) do
+        local buf = read_buffer(path)
+        ts_ctx.parse_buf(buf)
+        buffers[#buffers + 1] = buf
+    end
 
     -- Split window up to show all buffers
     local windows = {}
     local first = 0
     for i = 1, #buffers do
-        local last = math.floor(nc.LINES * i / #buffers)
+        local last = math.floor(rows * i / #buffers)
         windows[#windows + 1] = Window(buffers[i], last - first,
-                nc.COLS, first, 0)
+                cols, first, 0)
         first = last
     end
     local cur_win = 1
     local window = windows[cur_win]
+
+    -- Kind of a hack: make a separate window just for the modeline
+    local mode_window = Window(nil, 1, cols, rows, 0)
+
+    local function find_window_target(row, col)
+        for i, window in ipairs(windows) do
+            if row >= window.y and row < window.y + window.rows and
+                col >= window.x and col < window.x + window.cols then
+                return i, window
+            end
+        end
+    end
+
+    local current_mode = NORMAL_MODE
 
     -- Draw all windows
     function draw_all()
@@ -649,52 +796,87 @@ local function run_tui(buffers, dumb_tui)
 
     draw_all()
 
-    local start_line = 0
     while true do
         -- Draw screen
+        draw_mode_line(mode_window, current_mode)
         if dumb_tui then
             draw_all()
         else
             draw_lines(window, true)
         end
+        -- Also, refresh the current window again, to make sure the cursor is
+        -- in the right place
+        window.refresh()
 
         -- Handle input
-        local action = get_next_input(input_tree)
+        local action, buffer, data = get_next_input(INPUT_TREES[current_mode])
 
         if action == QUIT then
             break
-        elseif action == WINDOW_SWITCH then
-            cur_win = cur_win % #windows + 1
+        elseif action == ENTER_NORMAL then
+            current_mode = NORMAL_MODE
+        elseif action == ENTER_INSERT then
+            current_mode = INSERT_MODE
+        elseif action_is_window_switch(action) then
+            local offset = (action == WINDOW_NEXT and 1 or -1)
+            cur_win = (cur_win + offset - 1) % #windows + 1
             window = windows[cur_win]
             -- Draw all windows to refresh out-of-focus status lines
             draw_all()
-        else
-            local scroll = action_is_scroll(action, window)
-            if scroll then
-                window.handle_scroll(scroll)
+        elseif action == MOUSE_DOWN then
+            local i, target = find_window_target(unpack(data))
+            if i ~= nil then
+                cur_win, window = i, target
             end
+            -- HACK redraw every window
+            draw_all()
+        elseif action_is_scroll(action) then
+            if data then
+                local _, target = find_window_target(unpack(data))
+                if target then
+                    target.handle_scroll(action)
+                end
+                -- HACK redraw every window
+                draw_all()
+            else
+                window.handle_scroll(action)
+            end
+        elseif action_is_cursor(action) then
+            window.handle_cursor(action)
+        elseif action == INSERT_CHAR then
+            assert(current_mode == INSERT_MODE)
+            local line, byte = window.get_cursor()
+
+            local char = string.char(buffer[1])
+            local iter = ffi.new('meta_iter_t[1]')
+            -- Iterate to the offset of the cursor, and insert a char.
+            -- This is maybe a bit dumb/wasteful, since we're iterating
+            -- through the tree *twice* for every character inserted.
+            local node = zmt.iter_start_offset_from_line(iter, window.buf.tree,
+                    line, byte)
+            window.buf.tree = zmt.insert_bytes_at_current_node(iter,
+                    window.buf.tree, node, char, #char)
+
+            zmt.verify_node(window.buf.tree.root)
+            -- HACK: there's some bug with detecting holes
+            window.buf.tree = zmt.patch_tree_hole(window.buf.tree)
+            -- HACK: just re-parse the whole buffer, and leak the old ast
+            ts_ctx.parse_buf(window.buf)
+            -- XXX dumb?
+            window.handle_cursor(CURSOR_RIGHT)
+        else
+            --error('unknown action', action)
         end
     end
 end
 
-function module.main(arg)
-    -- Set up highlighting
-    local ts_ctx = TSContext()
-
+function module.main(args)
     if #arg < 1 then
         error('no files')
     end
 
-    -- Read input files and parse it
-    local buffers = {}
-    for _, path in ipairs(arg) do
-        local buf = read_buffer(path)
-        ts_ctx.parse_buf(buf)
-        buffers[#buffers + 1] = buf
-    end
-
     -- Run the TUI, catching and printing any errors
-    local res = {pcall(run_tui, buffers)}
+    local res = {pcall(run_tui, args)}
     nc.endwin()
     print(unpack(res))
 end
