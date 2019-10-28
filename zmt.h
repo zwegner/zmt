@@ -226,6 +226,9 @@ meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
 // Mutation
 meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
         bool create_hole);
+meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node);
+meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
+    uint64_t len);
 
 // XXX experimental/test apis
 meta_tree_t *patch_tree_hole(meta_tree_t *tree);

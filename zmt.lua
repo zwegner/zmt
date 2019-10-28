@@ -815,8 +815,18 @@ local function run_tui(paths, dumb_tui)
             break
         elseif action == ENTER_NORMAL then
             current_mode = NORMAL_MODE
+            -- HACK: there's some bug with detecting holes, so patch it
+            window.buf.tree = zmt.patch_tree_hole(window.buf.tree)
         elseif action == ENTER_INSERT then
             current_mode = INSERT_MODE
+            -- Iterate to the offset of the cursor, and split off a filler
+            -- node.
+            local line, byte = window.get_cursor()
+            local iter = ffi.new('meta_iter_t[1]')
+            local node = zmt.iter_start_offset_from_line(iter, window.buf.tree,
+                    line, byte)
+            window.buf.tree = zmt.split_current_node(iter,
+                    node)
         elseif action_is_window_switch(action) then
             local offset = (action == WINDOW_NEXT and 1 or -1)
             cur_win = (cur_win + offset - 1) % #windows + 1
@@ -845,21 +855,13 @@ local function run_tui(paths, dumb_tui)
             window.handle_cursor(action)
         elseif action == INSERT_CHAR then
             assert(current_mode == INSERT_MODE)
-            local line, byte = window.get_cursor()
 
             local char = string.char(buffer[1])
-            local iter = ffi.new('meta_iter_t[1]')
-            -- Iterate to the offset of the cursor, and insert a char.
-            -- This is maybe a bit dumb/wasteful, since we're iterating
-            -- through the tree *twice* for every character inserted.
-            local node = zmt.iter_start_offset_from_line(iter, window.buf.tree,
-                    line, byte)
-            window.buf.tree = zmt.insert_bytes_at_current_node(iter,
-                    window.buf.tree, node, char, #char)
+
+            window.buf.tree = zmt.append_bytes_to_filler(window.buf.tree,
+                    char, #char)
 
             zmt.verify_node(window.buf.tree.root)
-            -- HACK: there's some bug with detecting holes
-            window.buf.tree = zmt.patch_tree_hole(window.buf.tree)
             -- HACK: just re-parse the whole buffer, and leak the old ast
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?

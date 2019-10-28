@@ -54,6 +54,26 @@ chunk_t *create_chunk(uint8_t *data, size_t len) {
     return chunk;
 }
 
+static const uint8_t *write_data_bytes(const uint8_t *data, uint64_t len,
+        uint32_t *start, uint32_t *end) {
+    // XXX chunk management
+    if (!current_chunk)
+        current_chunk = create_chunk(NULL, 0x10000);
+    assert(current_chunk->used + len < current_chunk->len);
+
+    memcpy((uint8_t *)&current_chunk->data[current_chunk->used], data, len);
+
+    *start = current_chunk->used;
+    *end = current_chunk->used + len;
+
+    current_chunk->used += len;
+
+    // XXX what constitutes a ref? should probably be per-tree not per-node
+    current_chunk->ref_count++;
+
+    return current_chunk->data;
+}
+
 chunk_t *map_file(const char *path) {
     FILE *f = fopen(path, "r");
     fseek(f, 0, SEEK_END);
@@ -79,6 +99,12 @@ meta_tree_t *create_tree() {
     // Flag the embedded filler node
     tree->filler_node->flags = NODE_FILLER;
     return tree;
+}
+
+static meta_tree_t *duplicate_tree(meta_tree_t *tree) {
+    meta_tree_t *new_tree = (meta_tree_t *)malloc(sizeof(meta_tree_t));
+    *new_tree = *tree;
+    return new_tree;
 }
 
 meta_node_t *create_node() {
@@ -550,30 +576,50 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
         set_inner_meta_data(parent);
     }
 
-    return replace_current_node(iter, parent, true);
+    meta_tree_t *tree = replace_current_node(iter, parent, true);
+    // Mark the filler node of the new tree as fresh
+    tree->filler_node->leaf.chunk_data = NULL;
+    return tree;
+}
+
+meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
+    uint64_t len) {
+    assert(tree->has_hole);
+    tree = duplicate_tree(tree);
+
+    meta_node_t *filler = tree->filler_node;
+
+    const uint8_t *chunk_data;
+    uint32_t start, end;
+    chunk_data = write_data_bytes(data, len, &start, &end);
+
+    if (!filler->leaf.chunk_data) {
+        filler->leaf.chunk_data = chunk_data;
+        filler->leaf.start = start;
+        filler->leaf.end = end;
+    } else {
+        assert(chunk_data == filler->leaf.chunk_data);
+        assert(start == filler->leaf.end);
+        filler->leaf.end = end;
+    }
+
+    set_leaf_meta_data(filler);
+
+    return tree;
 }
 
 // Helper function: split the tree at the given offset, and insert the
 // given bytes into the filler node
 meta_tree_t *insert_bytes_at_current_node(meta_iter_t *iter, meta_tree_t *tree,
         meta_node_t *node, const uint8_t *data, uint64_t len) {
-    // Copy data into chunk
-    // XXX chunk management
-    if (!current_chunk)
-        current_chunk = create_chunk(NULL, 0x10000);
-    assert(current_chunk->used + len < current_chunk->len);
-    memcpy((uint8_t *)&current_chunk->data[current_chunk->used], data, len);
-
-    // XXX this is suboptimal, we should check for appending to the
-    // filler node
     tree = split_current_node(iter, node);
 
     meta_node_t *new_node = tree->filler_node;
-    new_node->leaf.chunk_data = current_chunk->data;
-    new_node->leaf.start = current_chunk->used;
-    new_node->leaf.end = current_chunk->used + len;
+
+    new_node->leaf.chunk_data = write_data_bytes(data, len,
+            &new_node->leaf.start, &new_node->leaf.end);
+
     set_leaf_meta_data(new_node);
-    current_chunk->ref_count++;
 
     return tree;
 }
@@ -608,6 +654,7 @@ const char *read_chunk(void *payload, uint32_t byte_offset, TSPoint position,
         *bytes_read = 0;
         return NULL;
     }
+    assert(node->flags & (NODE_LEAF | NODE_FILLER));
 
     // Set number of bytes read, and return a pointer to the raw data
     *bytes_read = node->leaf.end - node->leaf.start;
