@@ -3,9 +3,23 @@ local ffi = require('ffi')
 
 local module = {}
 
+-- Build the library. Not great for separation of concerns right now,
+-- but oh well.
+local conf = 'rel'
+if arg[1] == '-d' then
+    table.remove(arg, 1)
+    conf = 'deb'
+end
+local so_path = ('_out/%s/zmt.so'):format(conf)
+local h_path = '_out/pre.h'
+ffi.cdef('int system(const char *command);')
+if ffi.C.system(('make.py %s %s'):format(so_path, h_path)) ~= 0 then
+    error('failed build')
+end
+
 -- Load library and preprocessed source
-local zmt = ffi.load('_out/rel/zmt.so')
-local defs = io.open('_out/pre.h')
+local zmt = ffi.load(so_path)
+local defs = io.open(h_path)
 ffi.cdef(defs:read('*all'))
 defs:close()
 
