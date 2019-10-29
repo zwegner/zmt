@@ -505,12 +505,11 @@ end
 --------------------------------------------------------------------------------
 
 local function handle_mouse_input(buf)
+    -- XXX hardcoded values
     local code = buf[4] - 0x20
     local col = buf[5] - 0x21
     local row = buf[6] - 0x21
-    log(code, row, col)
-    -- XXX hardcoded bits
-    if code == 0 or col == 1 then
+    if code >= 0 and code <= 2 then
         return MOUSE_DOWN, {row, col}
     elseif code == 64 then
         return SCROLL_UP, {row, col}
