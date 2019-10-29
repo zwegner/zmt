@@ -43,7 +43,7 @@ local
     -- Insert mode
     INSERT_CHAR,
     -- Cursor
-    CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
+    CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT, CURSOR_NL,
     -- Scrolling
     SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP, SCROLL_HALFPAGE_DOWN,
     -- Mouse events
@@ -522,8 +522,10 @@ end
 local function handle_insert_char(buf)
     assert(#buf == 1)
     -- Ignore all non-ASCII and control characters except \n
-    if (buf[1] >= 32 and buf[1] < 127) or buf[1] == 10 then
+    if buf[1] >= 32 and buf[1] < 127 then
         return INSERT_CHAR, buf[1]
+    elseif buf[1] == 13 then
+        return INSERT_CHAR, 10
     end
 end
 
@@ -533,7 +535,7 @@ local function action_is_scroll(action)
     return action >= SCROLL_UP and action <= SCROLL_HALFPAGE_DOWN
 end
 local function action_is_cursor(action)
-    return action >= CURSOR_UP and action <= CURSOR_RIGHT
+    return action >= CURSOR_UP and action <= CURSOR_NL
 end
 local function action_is_window_switch(action)
     return action >= WINDOW_NEXT and action <= WINDOW_PREV
@@ -690,6 +692,8 @@ local function get_cursor_movement(action)
         return 0, -1
     elseif action == CURSOR_RIGHT then
         return 0, 1
+    elseif action == CURSOR_NL then
+        return 1, -1e100
     end
 end
 
@@ -922,7 +926,7 @@ local function run_tui(paths, dumb_tui)
         elseif action == INSERT_CHAR then
             assert(current_mode == INSERT_MODE)
 
-            local char = string.char(buffer[1])
+            local char = string.char(data)
 
             window.buf.tree = zmt.append_bytes_to_filler(window.buf.tree,
                     char, #char)
@@ -931,7 +935,7 @@ local function run_tui(paths, dumb_tui)
             -- HACK: just re-parse the whole buffer, and leak the old ast
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?
-            window.handle_cursor(CURSOR_RIGHT)
+            window.handle_cursor(data == 10 and CURSOR_NL or CURSOR_RIGHT)
         else
             --error('unknown action', action)
         end
