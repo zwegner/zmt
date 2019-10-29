@@ -882,7 +882,7 @@ function module.main(args)
     end
 
     -- Run the TUI, catching and printing any errors
-    local res = {pcall(run_tui, args)}
+    local res = {xpcall(run_tui, debug.traceback, args)}
     nc.endwin()
     print(unpack(res))
 end
