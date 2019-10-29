@@ -53,6 +53,31 @@ local
     check = enum(100)
 assert(check ~= nil)
 
+-- Render event enum
+local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_EOF, check = enum(5)
+assert(check ~= nil)
+
+-- Color codes for syntax highlighting. Each value is a (fg, bg) pair
+local HL_TYPE = {
+    ['default']             = {15,   0},
+    ['comment']             = {69,   0},
+    ['keyword']             = {28,   0},
+    ['preproc']             = {69,   0},
+    ['keyword.storagecls']  = {41,   0},
+    ['number']              = {9,    0},
+    ['string']              = {160,  0},
+    ['type']                = {41,   0},
+    ['type.user']           = {41,   0},
+
+    ['line_nb']             = {11, 238},
+    ['status']              = {15,  21, 'bold'},
+    ['status-unfocused']    = {0,   15},
+    ['mode_line']           = {15,   0, 'bold'},
+}
+
+local LINE_NB_FMT = '%4d '
+local LINE_NB_WIDTH = 5
+
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
@@ -208,25 +233,27 @@ local function TSQuery(query, buf)
     function self.next_event()
         if event_start >= event_end then
             local cn, cap_start, cap_end = next_capture()
-            if cn == nil then return end
-            events = {{cap_start, cn}, {cap_end, nil}}
+            if cn == nil then
+                return {1e100, EV_EOF, nil}
+            end
+            events = {{cap_start, EV_HL_BEGIN, cn}, {cap_end, EV_HL_END, nil}}
 
             -- Fill in any nested captures that happen within this one
             while true do
                 local cn, s, e = next_capture()
-                if cn == nil or s > cap_end then
+                if cn == nil or s >= cap_end then
                     assert(capture_pushback == nil)
                     capture_pushback = {cn, s, e}
                     break
                 end
-                events[#events+1] = {s, cn}
-                events[#events+1] = {e, nil}
+                events[#events+1] = {s, EV_HL_BEGIN, cn}
+                events[#events+1] = {e, EV_HL_END, nil}
             end
             table.sort(events, function(a, b) return a[1] < b[1] end)
             event_start, event_end = 0, #events
         end
         event_start = event_start + 1
-        return unpack(events[event_start])
+        return events[event_start]
     end
     return self
 end
@@ -236,7 +263,9 @@ end
 local function TSNullQuery()
     local self = {}
     function self.reset(offset) end
-    function self.next_event() end
+    function self.next_event()
+        return {1e100, EV_EOF, nil}
+    end
     return self
 end
 
@@ -284,28 +313,8 @@ end
 -- Drawing ---------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
--- Color codes for syntax highlighting. Each value is a (fg, bg) pair
-local HL_TYPE = {
-    ['default']             = {15,   0},
-    ['comment']             = {69,   0},
-    ['keyword']             = {28,   0},
-    ['preproc']             = {69,   0},
-    ['keyword.storagecls']  = {41,   0},
-    ['number']              = {9,    0},
-    ['string']              = {160,  0},
-    ['type']                = {41,   0},
-    ['type.user']           = {41,   0},
-
-    ['line_nb']             = {11, 238},
-    ['status']              = {15,  21, 'bold'},
-    ['status-unfocused']    = {0,   15},
-    ['mode_line']           = {15,   0, 'bold'},
-}
 local HL_ATTRS = {}
 local HL_ATTR_IDS = {}
-
-local LINE_NB_FMT = '%4d '
-local LINE_NB_WIDTH = 5
 
 local function init_color()
     local idx = 1
@@ -324,6 +333,64 @@ local function init_color()
     end
 end
 
+-- Create line wrap events at an interval of 'width'
+local function EventContext(query, width)
+    local self = {}
+
+    local line_start_offset, next_wrap_offset
+    local event = {-1, nil, nil}
+
+    local first = true
+
+    function self.mark_line_start(offset)
+        line_start_offset = offset
+        next_wrap_offset = offset
+        -- Start the query over once we get the first byte offset
+        if first then
+            first = false
+            query.reset(offset)
+        end
+    end
+
+    function self.next_event()
+        if next_wrap_offset + width <= event[1] then
+            next_wrap_offset = next_wrap_offset + width
+            return {next_wrap_offset, 'wrap', nil}
+        end
+        local e = event
+        event = query.next_event()
+        return e
+    end
+    return self
+end
+
+local function draw_number_column(window, row, line, wrap)
+    local line_nb_str
+    if wrap then
+        line_nb_str = (' '):rep(LINE_NB_WIDTH)
+    else
+        line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
+    end
+    window.write_at(row, 0, HL_TYPE['line_nb'], line_nb_str, LINE_NB_WIDTH)
+end
+
+local function draw_status_line(window, is_focused)
+    local attr = is_focused and HL_TYPE['status'] or
+            HL_TYPE['status-unfocused']
+    local status_line = window.buf.path .. (' '):rep(window.cols)
+    status_line = status_line:sub(1, window.cols)
+    window.write_at(window.rows - 1, 0, attr, status_line, #status_line)
+    window.end_row()
+end
+
+local function draw_mode_line(window, mode)
+    local attr = HL_TYPE['mode_line']
+    local mode_line = (mode == INSERT_MODE and '-- INSERT --' or '')
+    window.write_at(window.rows - 1, 0, attr, mode_line, #mode_line)
+    window.end_row()
+    window.refresh()
+end
+
 local function draw_lines(window, is_focused)
     local buf = window.buf
     window.clear()
@@ -332,70 +399,67 @@ local function draw_lines(window, is_focused)
     -- span multiple lines
     local cur_hl = HL_TYPE['default']
 
-    -- The next highlight event
-    -- Start at -1 so we grab the next capture immediately
-    local event_offset = -1
-    local event_hl = -1
+    -- Render event handling
+    local event_ctx = EventContext(buf.query, window.cols - LINE_NB_WIDTH)
+    -- The next highlight event. Start at -1 so we grab the next capture
+    -- immediately
+    local event_offset, event_type, event_hl = -1, nil, nil
     -- Keep a stack of highlights
     local hl_stack = {HL_TYPE['default']}
 
+    local function next_event()
+        event_offset, event_type, event_hl = unpack(event_ctx.next_event())
+        if event_type == EV_HL_BEGIN then
+            -- Push this highlight. Duplicate the top stack if this is
+            -- an ignored capture, so we can still pop it off later
+            event_hl = HL_TYPE[event_hl] or hl_stack[#hl_stack]
+            hl_stack[#hl_stack + 1] = event_hl
+        elseif event_type == EV_HL_END then
+            -- End of capture, pop the highlight stack
+            assert(#hl_stack > 1)
+            hl_stack[#hl_stack] = nil
+            event_hl = hl_stack[#hl_stack]
+        end
+    end
+
+    local last_line = -1
     local row = 0
     local col = 0
 
     -- Iterate through all lines in the file
-    local last_line = -1
-    local first = true
     for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
             buf.get_line_count() - 1) do
         -- Line number display
         if line ~= last_line then
-            -- Start the query over once we get the first byte offset
-            if first then
-                first = false
-                buf.query.reset(offset)
+            event_ctx.mark_line_start(offset)
+            -- Discard any line wrap events from the last line
+            if event_type == 'wrap' then
+                next_event()
             end
 
-            line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
-            local attr = HL_TYPE['line_nb']
-            window.write_at(row, 0, attr, line_nb_str, LINE_NB_WIDTH)
+            -- When drawing the very first line, read through events to get
+            -- the current highlight state, which might start above the screen
+            if last_line == -1 then
+                while offset > event_offset do
+                    next_event()
+                end
+                cur_hl = hl_stack[#hl_stack]
+            end
+
+            draw_number_column(window, row, line, false)
             col = LINE_NB_WIDTH
             last_line = line
         end
 
         -- Chop up this piece into parts that share the same highlight
         while #piece > 0 do
-            -- Jump the cursor forward until we know the next match
+            -- Grab the next event, skipping over any we've already gone past
             while offset > event_offset do
-                local off, hl = buf.query.next_event()
-                event_offset = off
-                if off == nil then
-                    event_offset = 1e100
-                    break
-                end
-                if hl == nil then
-                    -- End of capture, pop the highlight stack
-                    assert(#hl_stack > 1)
-                    hl_stack[#hl_stack] = nil
-                    event_hl = hl_stack[#hl_stack]
-                else
-                    -- Push this highlight. Duplicate the top stack if this is
-                    -- an ignored capture, so we can still pop it off later
-                    event_hl = HL_TYPE[hl] or hl_stack[#hl_stack]
-                    hl_stack[#hl_stack + 1] = event_hl
-                end
+                next_event()
             end
 
-            -- This byte starts or ends a highlight. Change the attr output,
-            -- and output one character of source so we make progress.
-            if offset == event_offset then
-                cur_hl = event_hl
-                local part = piece:sub(1, 1)
-                window.write_at(row, col, cur_hl, part, #part)
-                piece = piece:sub(2)
-                offset = offset + 1
-                col = col + 1
-            -- Default case: output up until the next highlight change
-            elseif event_offset > offset then
+            -- Output any characters up until the next event
+            if offset < event_offset then
                 local bound = math.min(event_offset - offset, #piece)
                 local part = piece:sub(1, bound)
                 window.write_at(row, col, cur_hl, part, #part)
@@ -403,38 +467,36 @@ local function draw_lines(window, is_focused)
                 offset = offset + #part
                 col = col + #part
             end
+
+            -- We've reached the next event. Update the current state and grab
+            -- another event.
+            if offset == event_offset then
+                -- Start/end highlight
+                if event_type == EV_HL_BEGIN or event_type == EV_HL_END then
+                    cur_hl = event_hl
+                -- Line wrap
+                elseif event_type == 'wrap' then
+                    row = row + 1
+                    if row >= window.rows - 1 then break end
+                    col = LINE_NB_WIDTH
+                    draw_number_column(window, row, line, true)
+                end
+                -- Be sure to grab another event here, since two events can
+                -- happen at the same byte offset, and we have to process both
+                next_event()
+            end
         end
 
-        -- Break out if this piece had a newline
+        -- Move to the next line if this piece had a newline
         if is_end then
-            -- Check for a highlight that starts/ends on the newline
-            if offset == event_offset then
-                cur_hl = event_hl
-            end
             row = row + 1
-            col = 0
-            if row >= window.rows - 1 then
-                break
-            end
         end
+        -- Check row count
+        if row >= window.rows - 1 then break end
     end
 
-    -- Draw status line
-    local attr = is_focused and HL_TYPE['status'] or
-            HL_TYPE['status-unfocused']
-    local status_line = buf.path .. (' '):rep(window.cols)
-    status_line = status_line:sub(1, window.cols)
-    window.write_at(window.rows - 1, 0, attr, status_line, #status_line)
+    draw_status_line(window, is_focused)
 
-    window.refresh()
-end
-
-local function draw_mode_line(window, mode)
-    -- Draw status line
-    local attr = HL_TYPE['mode_line']
-    local mode_line = (mode == INSERT_MODE and '-- INSERT --' or '')
-    window.write_at(window.rows - 1, 0, attr, mode_line, #mode_line)
-    window.end_row()
     window.refresh()
 end
 
