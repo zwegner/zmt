@@ -252,8 +252,11 @@ meta_tree_t *patch_tree_hole(meta_tree_t *tree) {
     assert(hole->flags & NODE_FILLER);
 
     // Replace the hole with the filler node
-    meta_node_t *filler = duplicate_node(tree->filler_node);
-    filler->flags = NODE_LEAF;
+    meta_node_t *filler = NULL;
+    if (tree->filler_node->leaf.end > tree->filler_node->leaf.start) {
+        filler = duplicate_node(tree->filler_node);
+        filler->flags = NODE_LEAF;
+    }
     tree = replace_current_node(iter, filler, false);
     tree->has_hole = false;
 
