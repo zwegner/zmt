@@ -68,6 +68,7 @@ local HL_TYPE = {
     ['string']              = {160,  0},
     ['type']                = {41,   0},
     ['type.user']           = {41,   0},
+    ['error']               = {15,   9},
 
     ['line_nb']             = {11, 238},
     ['status']              = {15,  21, 'bold'},

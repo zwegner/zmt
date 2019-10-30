@@ -27,6 +27,8 @@
 (preproc_function_def) @preproc
 (preproc_call) @preproc
 
+(ERROR) @error
+
 (string_literal) @string
 (system_lib_string) @string
 (number_literal) @number
