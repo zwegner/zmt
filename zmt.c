@@ -433,7 +433,12 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
         if (byte_offset) {
             assert(!line_offset);
             assert(byte_offset >= iter->start_offset.byte);
-            assert(byte_offset < iter->end_offset.byte);
+            // HACK: normally we should end up in [start, end), but with
+            // a zero-width filler node, we can't really fit...
+            assert(byte_offset < iter->end_offset.byte ||
+                    (byte_offset == iter->end_offset.byte &&
+                    byte_offset == iter->start_offset.byte &&
+                    node->flags & NODE_FILLER));
 
             // Exact match
             if (iter->start_offset.byte == byte_offset)
@@ -560,7 +565,6 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
     // offset started perfectly on a node or not. Right now we can always
     // determine this based on whether we got the slice node from the iterator.
     if (node == iter->slice_node) {
-        assert(iter->depth > 0);
         // Get the base node that the current node is a slice of
         // This is a tiny hack, in that it looks into the stack frame that
         // just got "popped", to see the node that is current
