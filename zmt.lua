@@ -263,9 +263,14 @@ local function TSContext()
             local zmt_parse, ts_lang, query_path = unpack(TS_LANGS[ftype])
             local lang = ts_lang()
             local q_text = io.open(query_path):read('*all')
-            -- We don't care about errors now, just pass an unused array
-            local dummy = ffi.new('uint32_t[1]')
-            local query = ts.ts_query_new(lang, q_text, #q_text, dummy, dummy)
+
+            local offset = ffi.new('uint32_t[1]')
+            local error_type = ffi.new('uint32_t[1]')
+            local query = ts.ts_query_new(lang, q_text, #q_text, offset, error_type)
+            if query == nil then
+                error(('error parsing query file %q, error %d at offset %d')
+                        :format(query_path, error_type[0], offset[0]))
+            end
             self.langs[ftype] = {zmt_parse, query}
         end
         return unpack(self.langs[ftype])
