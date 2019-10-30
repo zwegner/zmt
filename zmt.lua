@@ -43,7 +43,8 @@ local
     -- Insert mode
     INSERT_CHAR,
     -- Cursor
-    CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT, CURSOR_NL,
+    _CURSOR_MIN, CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
+    CURSOR_HOME, CURSOR_END, CURSOR_NL, _CURSOR_MAX,
     -- Scrolling
     SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP, SCROLL_HALFPAGE_DOWN,
     -- Mouse events
@@ -54,7 +55,7 @@ local
 assert(check ~= nil)
 
 -- Render event enum
-local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_EOF, check = enum(5)
+local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_CURSOR, EV_EOF, check = enum(50)
 assert(check ~= nil)
 
 -- Color codes for syntax highlighting. Each value is a (fg, bg) pair
@@ -187,9 +188,7 @@ local function TSQuery(query, buf)
     local cap_idx = ffi.new('uint32_t[1]')
     local cn_len = ffi.new('uint32_t[1]')
     local cap_names = {}
-    local events = {}
-    local event_start, event_end = 0, 0
-    local capture_pushback = nil
+    local current_capture = nil
 
     function self.free()
         ts.ts_query_cursor_delete(cursor)
@@ -198,9 +197,7 @@ local function TSQuery(query, buf)
     function self.reset(offset)
         ts.ts_query_cursor_exec(cursor, query, ts.ts_tree_root_node(buf.ast))
         ts.ts_query_cursor_set_byte_range(cursor, offset, -1)
-        events = {}
-        event_start, event_end = 0, 0
-        capture_pushback = nil
+        self.next_capture()
     end
 
     local function get_capture_name(id)
@@ -212,50 +209,25 @@ local function TSQuery(query, buf)
     end
 
     -- Advance the TSQueryCursor to the next capture
-    local function next_capture()
-        if capture_pushback then
-            local c = capture_pushback
-            capture_pushback = nil
-            return unpack(c)
+    function self.next_capture()
+        local ok = ts.ts_query_cursor_next_capture(cursor, match, cap_idx)
+        if not ok then
+            current_capture = {}
+            return
         end
-        local ok = ts.ts_query_cursor_next_capture(cursor, match,
-                cap_idx)
-        if not ok then return end
         local capture = match[0].captures[cap_idx[0]]
 
         -- Return capture name, and start/end byte offsets
         local cn = get_capture_name(capture.index)
         local s = ts.ts_node_start_byte(capture.node)
         local e = ts.ts_node_end_byte(capture.node)
-        return cn, s, e
+        current_capture = {cn, s, e}
     end
 
-    -- Advance the event iterator
-    function self.next_event()
-        if event_start >= event_end then
-            local cn, cap_start, cap_end = next_capture()
-            if cn == nil then
-                return {1e100, EV_EOF, nil}
-            end
-            events = {{cap_start, EV_HL_BEGIN, cn}, {cap_end, EV_HL_END, nil}}
-
-            -- Fill in any nested captures that happen within this one
-            while true do
-                local cn, s, e = next_capture()
-                if cn == nil or s >= cap_end then
-                    assert(capture_pushback == nil)
-                    capture_pushback = {cn, s, e}
-                    break
-                end
-                events[#events+1] = {s, EV_HL_BEGIN, cn}
-                events[#events+1] = {e, EV_HL_END, nil}
-            end
-            table.sort(events, function(a, b) return a[1] < b[1] end)
-            event_start, event_end = 0, #events
-        end
-        event_start = event_start + 1
-        return events[event_start]
+    function self.current_capture()
+        return unpack(current_capture)
     end
+
     return self
 end
 
@@ -264,9 +236,8 @@ end
 local function TSNullQuery()
     local self = {}
     function self.reset(offset) end
-    function self.next_event()
-        return {1e100, EV_EOF, nil}
-    end
+    function self.next_capture() end
+    function self.current_capture() end
     return self
 end
 
@@ -334,34 +305,96 @@ local function init_color()
     end
 end
 
--- Create line wrap events at an interval of 'width'
-local function EventContext(query, width)
+-- EventContext manages rendering events, which are byte offsets in which a
+-- special action needs to take place during rendering, such as changing the
+-- highlight, wrapping the line, or displaying the cursor. We keep a priority
+-- queue of sorts that will return the next event, but this simple model is
+-- complicated by events like line wrapping which are dynamic: we don't know
+-- what byte offset a line wrap happens on until we start the line, and we
+-- don't know when a line ends until we hit the next one.
+local function EventContext(window, query, width)
     local self = {}
 
-    local line_start_offset, next_wrap_offset
-    local event = {-1, nil, nil}
+    -- Dynamic events: line wrap and cursor
+    local next_wrap_offset
+    local cursor_offset = nil
+
+    -- Event buffer, for managing nested highlights
+    local event_buf = {}
+    local event_start, event_end = 0, 0
+    local next_hl_event = {-1, nil, nil}
 
     local first = true
 
-    function self.mark_line_start(offset)
-        line_start_offset = offset
-        next_wrap_offset = offset
-        -- Start the query over once we get the first byte offset
+    function self.mark_line_start(line, offset)
+        -- Set next potential line wrap event
+        next_wrap_offset = offset + width
+        -- If this is the line with the cursor, set up an event
+        cursor_offset = (line == window.curs_line and offset + window.curs_byte)
+
+        -- Start the tree-sitter query over once we get the first byte offset
         if first then
             first = false
             query.reset(offset)
         end
     end
 
-    function self.next_event()
-        if next_wrap_offset + width <= event[1] then
-            next_wrap_offset = next_wrap_offset + width
-            return {next_wrap_offset, 'wrap', nil}
+    function self.next_capture_event()
+        -- If the buffer is exhausted, grab a new capture, and fill in any
+        -- nested captures
+        if event_start >= event_end then
+            local cap_name, cap_start, cap_end = query.current_capture()
+            if cap_name == nil then
+                next_hl_event = {1e100, EV_EOF, nil}
+                return
+            end
+
+            event_buf = {{cap_start, EV_HL_BEGIN, cap_name},
+                    {cap_end, EV_HL_END, nil}}
+
+            -- Fill in any nested captures that happen within this one
+            while true do
+                query.next_capture()
+                local n, s, e = query.current_capture()
+                if n == nil or s >= cap_end then
+                    break
+                end
+                event_buf[#event_buf+1] = {s, EV_HL_BEGIN, n}
+                event_buf[#event_buf+1] = {e, EV_HL_END, nil}
+            end
+            table.sort(event_buf, function(a, b) return a[1] < b[1] end)
+            event_start, event_end = 0, #event_buf
         end
-        local e = event
-        event = query.next_event()
-        return e
+
+        event_start = event_start + 1
+        next_hl_event = event_buf[event_start]
     end
+
+    -- Peek at the current event. We generally do this without consuming
+    -- an event, since due to dynamic events the next event might change
+    -- as we move forward through the buffer
+    function self.current_event()
+        if cursor_offset and cursor_offset <= next_wrap_offset and
+                cursor_offset <= next_hl_event[1] then
+            return {cursor_offset, EV_CURSOR, nil}
+        elseif next_wrap_offset <= next_hl_event[1] then
+            return {next_wrap_offset, EV_WRAP, nil}
+        else
+            return next_hl_event
+        end
+    end
+
+    -- Advance the event queue
+    function self.next_event(event_type)
+        if event_type == EV_CURSOR then
+            cursor_offset = nil
+        elseif event_type == EV_WRAP then
+            next_wrap_offset = next_wrap_offset + width
+        else
+            self.next_capture_event()
+        end
+    end
+
     return self
 end
 
@@ -396,53 +429,71 @@ local function draw_lines(window, is_focused)
     local buf = window.buf
     window.clear()
 
-    -- The current highlight value, so we can have syntax regions that
-    -- span multiple lines
-    local cur_hl = HL_TYPE['default']
-
     -- Render event handling
-    local event_ctx = EventContext(buf.query, window.cols - LINE_NB_WIDTH)
-    -- The next highlight event. Start at -1 so we grab the next capture
-    -- immediately
+    local event_ctx = EventContext(window, buf.query, window.cols - LINE_NB_WIDTH)
+    -- The current render event we're waiting for
     local event_offset, event_type, event_hl = -1, nil, nil
-    -- Keep a stack of highlights
+    -- A stack of highlights, so highlights can nest
     local hl_stack = {HL_TYPE['default']}
-
-    local function next_event()
-        event_offset, event_type, event_hl = unpack(event_ctx.next_event())
-        if event_type == EV_HL_BEGIN then
-            -- Push this highlight. Duplicate the top stack if this is
-            -- an ignored capture, so we can still pop it off later
-            event_hl = HL_TYPE[event_hl] or hl_stack[#hl_stack]
-            hl_stack[#hl_stack + 1] = event_hl
-        elseif event_type == EV_HL_END then
-            -- End of capture, pop the highlight stack
-            assert(#hl_stack > 1)
-            hl_stack[#hl_stack] = nil
-            event_hl = hl_stack[#hl_stack]
-        end
-    end
+    -- The current highlight value
+    local cur_hl = HL_TYPE['default']
 
     local last_line = -1
     local row = 0
     local col = 0
+
+    local function set_event()
+        event_offset, event_type, event_hl = unpack(event_ctx.current_event())
+    end
+
+    local function next_event()
+        event_ctx.next_event(event_type)
+        set_event()
+    end
+
+    -- Update state based on the current event. Generally called at the exact
+    -- offset of the event, except when handling highlights that start before
+    -- the start of the screen. This also advances the event iterator.
+    local function handle_event()
+        -- Start highlight
+        if event_type == EV_HL_BEGIN then
+            -- Push this highlight. Duplicate the top stack if this is
+            -- an ignored capture, so we can still pop it off later
+            cur_hl = HL_TYPE[event_hl] or hl_stack[#hl_stack]
+            hl_stack[#hl_stack + 1] = cur_hl
+        -- End highlight
+        elseif event_type == EV_HL_END then
+            -- End of capture, pop the highlight stack
+            assert(#hl_stack > 1)
+            hl_stack[#hl_stack] = nil
+            cur_hl = hl_stack[#hl_stack]
+        -- Line wrap. HACK: make sure to not wrap if this is the last
+        -- character of a line
+        elseif event_type == EV_WRAP then
+        --elseif event_type == EV_WRAP and (not is_end or #piece > 0) then
+            row = row + 1
+            col = LINE_NB_WIDTH
+            draw_number_column(window, row, line, true)
+        -- Mark cursor
+        elseif event_type == EV_CURSOR then
+            window.mark_cursor(row, col - LINE_NB_WIDTH)
+        end
+        next_event()
+    end
 
     -- Iterate through all lines in the file
     for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
             buf.get_line_count() - 1) do
         -- Line number display
         if line ~= last_line then
-            event_ctx.mark_line_start(offset)
-            -- Discard any line wrap events from the last line
-            if event_type == 'wrap' then
-                next_event()
-            end
+            event_ctx.mark_line_start(line, offset)
+            set_event()
 
             -- When drawing the very first line, read through events to get
             -- the current highlight state, which might start above the screen
             if last_line == -1 then
                 while offset > event_offset do
-                    next_event()
+                    handle_event()
                 end
                 cur_hl = hl_stack[#hl_stack]
             end
@@ -452,9 +503,10 @@ local function draw_lines(window, is_focused)
             last_line = line
         end
 
-        -- Chop up this piece into parts that share the same highlight
-        while #piece > 0 do
-            -- Grab the next event, skipping over any we've already gone past
+        -- Chop up this piece into parts separated by events from event_ctx
+        while (#piece > 0 or offset == event_offset) and
+                row < window.rows - 1 do
+            -- Skip over any events we've already gone past
             while offset > event_offset do
                 next_event()
             end
@@ -469,22 +521,9 @@ local function draw_lines(window, is_focused)
                 col = col + #part
             end
 
-            -- We've reached the next event. Update the current state and grab
-            -- another event.
+            -- We've reached an event, update the current state
             if offset == event_offset then
-                -- Start/end highlight
-                if event_type == EV_HL_BEGIN or event_type == EV_HL_END then
-                    cur_hl = event_hl
-                -- Line wrap
-                elseif event_type == 'wrap' then
-                    row = row + 1
-                    if row >= window.rows - 1 then break end
-                    col = LINE_NB_WIDTH
-                    draw_number_column(window, row, line, true)
-                end
-                -- Be sure to grab another event here, since two events can
-                -- happen at the same byte offset, and we have to process both
-                next_event()
+                handle_event()
             end
         end
 
@@ -535,7 +574,7 @@ local function action_is_scroll(action)
     return action >= SCROLL_UP and action <= SCROLL_HALFPAGE_DOWN
 end
 local function action_is_cursor(action)
-    return action >= CURSOR_UP and action <= CURSOR_NL
+    return action >= _CURSOR_MIN and action <= _CURSOR_MAX
 end
 local function action_is_window_switch(action)
     return action >= WINDOW_NEXT and action <= WINDOW_PREV
@@ -548,10 +587,14 @@ local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
 local INPUT_TABLES = {
     [NORMAL_MODE] = {
         ['QQ']              = QUIT,
+
         ['h']               = CURSOR_LEFT,
         ['j']               = CURSOR_DOWN,
         ['k']               = CURSOR_UP,
         ['l']               = CURSOR_RIGHT,
+        ['0']               = CURSOR_HOME,
+        ['$']               = CURSOR_END,
+
         ['i']               = ENTER_INSERT,
         [CTRL('E')]         = SCROLL_DOWN,
         [CTRL('Y')]         = SCROLL_UP,
@@ -692,6 +735,10 @@ local function get_cursor_movement(action)
         return 0, -1
     elseif action == CURSOR_RIGHT then
         return 0, 1
+    elseif action == CURSOR_HOME then
+        return 0, -1e100
+    elseif action == CURSOR_END then
+        return 0, 1e100
     elseif action == CURSOR_NL then
         return 1, -1e100
     end
@@ -702,33 +749,42 @@ local function Window(buf, rows, cols, y, x)
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
-    self.curs_line, self.curs_off = 0, 0
+    self.curs_line, self.curs_byte = 0, 0
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line = 0
 
     function self.clear()
+        self.curs_row, self.curs_col = nil, nil
         nc.werase(self.win)
     end
     function self.end_row()
         nc.wclrtoeol(self.win)
     end
     function self.refresh()
-        nc.wmove(self.win, self.curs_row, self.curs_col + LINE_NB_WIDTH)
+        if self.curs_row and self.curs_col then
+            nc.wmove(self.win, self.curs_row, self.curs_col + LINE_NB_WIDTH)
+        end
         nc.wrefresh(self.win)
     end
 
     function self.handle_cursor(action)
         local dy, dx = get_cursor_movement(action)
-        self.curs_row = math.max(0, math.min(self.curs_row + dy, self.rows - 1))
-        self.curs_col = math.max(0, math.min(self.curs_col + dx, self.cols - 1))
-        -- XXX dumb crappy hack logic
-        self.curs_line = self.start_line + self.curs_row
-        self.curs_off = self.curs_col
+        self.curs_line = math.max(0, math.min(self.curs_line + dy,
+                tonumber(zmt.get_tree_line_count(self.buf.tree) - 1)))
+        -- XXX multibyte
+        local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
+                    self.curs_line)) - 2
+        self.curs_byte = math.max(0, math.min(self.curs_byte + dx,
+                len))
+    end
+
+    function self.mark_cursor(row, col)
+        self.curs_row, self.curs_col = row, col
     end
 
     function self.get_cursor()
-        return self.curs_line, self.curs_off
+        return self.curs_line, self.curs_byte
     end
 
     function self.write_at(row, col, attr, str, len)
