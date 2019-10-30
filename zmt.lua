@@ -23,6 +23,9 @@ local defs = io.open(h_path)
 ffi.cdef(defs:read('*all'))
 defs:close()
 
+-- Make C library accessible elsewhere
+module.zmt = zmt
+
 -- Alias for libc
 local C = ffi.C
 -- Alias for tree-sitter
@@ -91,13 +94,18 @@ local NODE_HOLE   = bit.lshift(1, zmt.node_hole_bit)
 local NODE_FILLER = bit.lshift(1, zmt.node_filler_bit)
 local MAX_CHILDREN = 2
 
--- Iterate through the given piece tree, starting at the given offset
-local function iter_nodes(tree, byte_offset, line_offset)
+function module.iter_start(tree, byte_offset, line_offset)
     byte_offset = byte_offset or 0
     line_offset = line_offset or 0
+    local iter = ffi.new('meta_iter_t[1]')
+    local node = zmt.iter_start(iter, tree, byte_offset, line_offset)
+    return iter, node
+end
+
+-- Iterate through the given piece tree, starting at the given offset
+function module.iter_nodes(tree, byte_offset, line_offset)
     return coroutine.wrap(function()
-        local iter = ffi.new('meta_iter_t[1]')
-        local node = zmt.iter_start(iter, tree, byte_offset, line_offset)
+        local iter, node = module.iter_start(tree, byte_offset, line_offset)
         while node ~= nil do
             local l = node.leaf
             -- end is a keyword. Oh well, it's the proper variable name
@@ -111,11 +119,11 @@ end
 -- Iterate through pieces, broken up by lines. We yield successive tuples of
 -- the form (line_number, byte_offset, is_end, piece), where is_end marks
 -- pieces that are at the end of their respective lines
-local function iter_lines(tree, line_start, line_end)
+function module.iter_lines(tree, line_start, line_end)
     return coroutine.wrap(function()
         -- Start a piece iterator at the start line
         local line = line_start
-        for iter, node, piece in iter_nodes(tree, 0, line_start) do
+        for iter, node, piece in module.iter_nodes(tree, 0, line_start) do
             -- Chop up this piece into lines. We only do the scan the exact
             -- number of times needed
             local offset = iter.start_offset.byte
@@ -482,8 +490,8 @@ local function draw_lines(window, is_focused)
     end
 
     -- Iterate through all lines in the file
-    for line, offset, is_end, piece in iter_lines(buf.tree, window.start_line,
-            buf.get_line_count() - 1) do
+    for line, offset, is_end, piece in module.iter_lines(buf.tree,
+            window.start_line, buf.get_line_count() - 1) do
         -- Line number display
         if line ~= last_line then
             event_ctx.mark_line_start(line, offset)

@@ -21,6 +21,14 @@ function enum(stop)
     return unpack(range(1, stop, 1))
 end
 
+function iter_unpack(table)
+    return coroutine.wrap(function()
+        for i, item in pairs(table) do
+            coroutine.yield(i, unpack(item))
+        end
+    end)
+end
+
 function iter(...)
     return ipairs({...})
 end
@@ -43,4 +51,52 @@ function str(value)
     else
         return tostring(value)
     end
+end
+
+function astr(array)
+    return '{' .. table.concat(array, ', ') .. '}'
+end
+
+function concat(...)
+    local result = {}
+    for _, table in iter(...) do
+        for _, item in ipairs(table) do
+            result[#result + 1] = item
+        end
+    end
+    return result
+end
+
+-- Nested equality comparison. Ignores metatables. Returns a table {false, msg}
+-- if not equal, or nil otherwise, mostly for an easy interface
+local function equals(a, b, path)
+    if type(a) == 'table' and type(b) == 'table' then
+        local seen_keys = {}
+        for _, t1, t2 in iter_unpack{{a, b}, {b, a}} do
+            for k, v1 in pairs(t1) do
+                if not seen_keys[k] then
+                    seen_keys[k] = true
+                    local v2 = t2[k]
+                    local r = equals(v1, v2, concat(path, {k}))
+                    if r then return r end
+                end
+            end
+        end
+    elseif a ~= b then
+        msg = ('values not equal: %s ~= %s'):format(str(a), str(b))
+        if #path > 0 then
+            msg = msg .. ', through path ' ..  astr(path)
+        end
+        return {false, msg}
+    end
+end
+
+function assert_eq(a, b)
+    local r = equals(a, b, {}) or {true}
+    return assert(unpack(r))
+end
+
+function assert_neq(a, b)
+    local r = equals(a, b, {}) or {true}
+    return assert(not unpack(r))
 end
