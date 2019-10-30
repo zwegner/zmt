@@ -91,12 +91,17 @@ chunk_t *map_file(const char *path) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Nodes ///////////////////////////////////////////////////////////////////////
+// Trees/Nodes /////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-meta_tree_t *create_tree() {
+// Allocate a new tree structure. If make_root is true, we allocate an empty
+// leaf node as the root.
+meta_tree_t *create_tree(bool make_root) {
     meta_tree_t *tree = (meta_tree_t *)calloc(1, sizeof(meta_tree_t));
     tree->ref_count = 1;
+
+    if (make_root)
+        tree->root = create_leaf();
 
     // Flag the embedded filler node
     tree->filler_node->flags = NODE_FILLER;
@@ -175,20 +180,18 @@ void verify_node(meta_node_t *node) {
 
 meta_tree_t *read_data(chunk_t *chunk) {
     // Create tree
-    meta_tree_t *tree = create_tree();
+    meta_tree_t *tree = create_tree(true);
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
-    // Create one leaf node with all data
-    meta_node_t *node = create_leaf();
-    node->leaf.start = 0;
-    node->leaf.end = chunk->len;
-    node->leaf.chunk_data = chunk->data;
+    // Fill in root node with all data
+    tree->root->leaf.start = 0;
+    tree->root->leaf.end = chunk->len;
+    tree->root->leaf.chunk_data = chunk->data;
     chunk->ref_count++;
 
-    set_leaf_meta_data(node);
+    set_leaf_meta_data(tree->root);
 
-    tree->root = node;
     return tree;
 }
 
@@ -217,7 +220,7 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
 
 meta_tree_t *dumb_read_data(chunk_t *chunk) {
     // Create tree
-    meta_tree_t *tree = create_tree();
+    meta_tree_t *tree = create_tree(false);
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
@@ -261,6 +264,15 @@ uint64_t get_tree_line_count(meta_tree_t *tree) {
     if (tree->has_hole)
         return tree->root->nl_count + tree->filler_node->nl_count - 1;
     return tree->root->nl_count;
+}
+
+// XXX this is dumb
+uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line) {
+    meta_iter_t iter[1];
+    (void)iter_start(iter, tree, 0, line);
+    uint64_t start_offset = iter->start_offset.byte;
+    (void)iter_start(iter, tree, 0, line + 1);
+    return iter->start_offset.byte - start_offset;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -505,7 +517,7 @@ meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
 // tree.
 meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
         bool create_hole) {
-    meta_tree_t *tree = create_tree();
+    meta_tree_t *tree = create_tree(false);
     // Is the new node a hole node (or a parent of one)?
     if (create_hole) {
         // If there is already a hole in this tree, patch it up. We don't

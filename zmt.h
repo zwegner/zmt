@@ -211,10 +211,18 @@ typedef struct {
 // Prototypes //////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+// File/chunk management
 chunk_t *map_file(const char *path);
 meta_tree_t *read_data(chunk_t *chunk);
-void verify_node(meta_node_t *node);
+
+// Tree creation
+meta_tree_t *create_tree(bool make_root);
+meta_node_t *create_node();
+meta_node_t *create_leaf();
+
+// Metadata functions
 uint64_t get_tree_line_count(meta_tree_t *tree);
+uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line);
 
 // Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree);
@@ -230,6 +238,9 @@ meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
 meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node);
 meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
     uint64_t len);
+
+// Testing functions
+void verify_node(meta_node_t *node);
 
 // XXX experimental/test apis
 meta_tree_t *patch_tree_hole(meta_tree_t *tree);
