@@ -174,7 +174,7 @@ local function print_node(tree, node, depth)
     end
 end
 
-local function print_tree(tree)
+function module.print_tree(tree)
     log('\n\nTREE')
     print_node(tree, tree.root, 0)
 end
