@@ -524,21 +524,15 @@ meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
 // tree.
 meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
         bool create_hole) {
-    meta_tree_t *tree = create_tree(false);
-    // Is the new node a hole node (or a parent of one)?
-    if (create_hole) {
-        // If there is already a hole in this tree, patch it up. We don't
-        // bother if we're replacing the filler node.
-        if (tree->has_hole &&
-                !(iter->frame[iter->depth].node->flags & NODE_HOLE)) {
-            // This is recursive, but can only go one deep
-            // XXX This tree will be immediately replaced. Any optimization
-            // possible here? Or just let gc take care of it?
-            tree = patch_tree_hole(tree);
-        }
-        tree->has_hole = true;
-        tree->hole_offset = iter->start_offset;
-    }
+    meta_tree_t *tree;
+    // If we're creating a new hole and there's already a hole in this tree,
+    // patch it up. We don't bother if we're replacing the hole itself.
+    // This is recursive, but can only go one deep.
+    if (create_hole && iter->tree->has_hole &&
+            !(iter->frame[iter->depth].node->flags & NODE_HOLE))
+        tree = patch_tree_hole(iter->tree);
+    else
+        tree = duplicate_tree(iter->tree);
 
     // Walk back up the stack, copying each parent node in succession
     for (uint32_t depth = iter->depth; depth > 0; depth--) {
@@ -567,6 +561,10 @@ meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
 
     tree->root = new_node;
     iter->tree = tree;
+    if (create_hole) {
+        tree->has_hole = true;
+        tree->hole_offset = iter->start_offset;
+    }
     return tree;
 }
 
@@ -610,6 +608,11 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
         child_l->leaf.end = child_r->leaf.start;
         child_l->byte_count -= child_r->byte_count;
         child_l->nl_count -= child_r->nl_count;
+
+        // Reset the flags of both duplicated nodes, in case we are splitting
+        // a filler node
+        child_l->flags = NODE_LEAF;
+        child_r->flags = NODE_LEAF;
 
         // XXX This logic is MAX_CHILDREN==2 specific
         meta_node_t *sub_parent = create_node();
