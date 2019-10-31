@@ -126,7 +126,7 @@ function module.iter_lines(tree, line_start, line_end)
         for iter, node, piece in module.iter_nodes(tree, 0, line_start) do
             -- Chop up this piece into lines. We only do the scan the exact
             -- number of times needed
-            local offset = iter.start_offset.byte
+            local offset = tonumber(iter.start_offset.byte)
             for i = 0, node.nl_count - 1 do
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')

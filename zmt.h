@@ -64,9 +64,8 @@
 // of the filler gets larger, the benefit starts to disappear.
 
 typedef struct {
-    // XXX make these 32-bit for now for luajit compat. This size is inadequate!
-    uint32_t byte;
-    uint32_t line;
+    int64_t byte;
+    int64_t line;
 } offset_t;
 
 // chunk_t holds big chunks of contiguous backing memory
