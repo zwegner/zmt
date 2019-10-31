@@ -221,7 +221,7 @@ meta_node_t *create_node();
 meta_node_t *create_leaf();
 
 // Metadata functions
-uint64_t get_tree_line_count(meta_tree_t *tree);
+offset_t get_tree_total_size(meta_tree_t *tree);
 uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line);
 
 // Iteration

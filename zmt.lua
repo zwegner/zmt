@@ -721,7 +721,7 @@ local function Buffer(path)
     self.tree = zmt.dumb_read_data(self.chunk)
 
     function self.get_line_count()
-        return zmt.get_tree_line_count(self.tree)
+        return zmt.get_tree_total_size(self.tree).line
     end
     return self
 end
@@ -783,7 +783,7 @@ local function Window(buf, rows, cols, y, x)
     function self.handle_cursor(action)
         local dy, dx = get_cursor_movement(action)
         self.curs_line = math.max(0, math.min(self.curs_line + dy,
-                tonumber(zmt.get_tree_line_count(self.buf.tree) - 1)))
+                tonumber(buf.get_line_count() - 1)))
         -- XXX multibyte
         local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
                     self.curs_line)) - 2

@@ -263,10 +263,16 @@ meta_tree_t *patch_tree_hole(meta_tree_t *tree) {
     return tree;
 }
 
-uint64_t get_tree_line_count(meta_tree_t *tree) {
-    if (tree->has_hole)
-        return tree->root->nl_count + tree->filler_node->nl_count - 1;
-    return tree->root->nl_count;
+offset_t get_tree_total_size(meta_tree_t *tree) {
+    offset_t off = {
+        .byte = tree->root->byte_count,
+        .line = tree->root->nl_count
+    };
+    if (tree->has_hole) {
+        off.byte += tree->filler_node->byte_count - 1;
+        off.line += tree->filler_node->nl_count - 1;
+    }
+    return off;
 }
 
 // XXX this is dumb
