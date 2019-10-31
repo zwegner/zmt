@@ -57,6 +57,10 @@ function astr(array)
     return '{' .. table.concat(array, ', ') .. '}'
 end
 
+function right_pad(str, len)
+    return str .. (' '):rep(len - #str)
+end
+
 function concat(...)
     local result = {}
     for _, table in iter(...) do

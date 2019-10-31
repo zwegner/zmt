@@ -424,8 +424,7 @@ end
 local function draw_status_line(window, is_focused)
     local attr = is_focused and HL_TYPE['status'] or
             HL_TYPE['status-unfocused']
-    local status_line = window.buf.path .. (' '):rep(window.cols)
-    status_line = status_line:sub(1, window.cols)
+    local status_line = right_pad(window.buf.path, window.cols)
     window.write_at(window.rows - 1, 0, attr, status_line, #status_line)
     window.end_row()
 end

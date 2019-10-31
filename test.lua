@@ -46,6 +46,12 @@ local TESTS = {
 }
 
 for name, fn in pairs(TESTS) do
-    print(name)
-    fn()
+    io.stdout:write(right_pad(name .. '...', 50))
+    local ok, res = xpcall(fn, debug.traceback)
+    if ok then
+        print('[\027[32mPASS\027[0m]')
+    else
+        print('[\027[31mFAIL\027[0m]')
+        print(res)
+    end
 end
