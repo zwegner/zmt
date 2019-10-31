@@ -371,10 +371,9 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     end.byte += child->byte_count;
                     end.line += child->nl_count;
 
-                    if ((iter->desired_offset.byte &&
-                            end.byte > iter->desired_offset.byte) ||
-                        (iter->desired_offset.line &&
-                             end.line >= iter->desired_offset.line))
+                    if (iter->desired_offset.byte ?
+                            (end.byte > iter->desired_offset.byte) :
+                            (end.line >= iter->desired_offset.line))
                         CALL(child, ITER_JUMP);
                     else {
                         iter->start_offset = end;
@@ -433,6 +432,11 @@ meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
                     iter->desired_offset.line -= hole_offset.line;
                 }
             }
+
+            // Don't bother with the jump stuff if the hole if we ended
+            // up jumping to the beginning
+            if (!iter->desired_offset.byte && !iter->desired_offset.line)
+                iter->frame[0].state = ITER_START;
         }
 
         meta_node_t *node = iter_next(iter);
