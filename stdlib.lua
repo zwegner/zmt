@@ -76,14 +76,17 @@ end
 local function equals(a, b, path)
     if type(a) == 'table' and type(b) == 'table' then
         local seen_keys = {}
-        for _, t1, t2 in iter_unpack{{a, b}, {b, a}} do
-            for k, v1 in pairs(t1) do
-                if not seen_keys[k] then
-                    seen_keys[k] = true
-                    local v2 = t2[k]
-                    local r = equals(v1, v2, concat(path, {k}))
-                    if r then return r end
-                end
+        for k, v1 in pairs(a) do
+            seen_keys[k] = true
+            local v2 = b[k]
+            local r = equals(v1, v2, concat(path, {k}))
+            if r then return r end
+        end
+        for k, v2 in pairs(b) do
+            if not seen_keys[k] then
+                local v1 = a[k]
+                local r = equals(v1, v2, concat(path, {k}))
+                if r then return r end
             end
         end
     elseif a ~= b then
