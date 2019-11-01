@@ -167,7 +167,7 @@ local function print_node(tree, node, depth)
     else
         log(prefix)
         for i = 0, MAX_CHILDREN-1 do
-            if node.inner.children[i] then
+            if node.inner.children[i] ~= nil then
                 print_node(tree, node.inner.children[i], depth+1)
             end
         end
