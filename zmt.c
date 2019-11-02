@@ -14,7 +14,7 @@ chunk_t *current_chunk;
 // make this actually read only, with any writes causing a bus error.
 // We do make non-const pointers to this though, so we have to be careful.
 static const meta_node_t HOLE_NODE_SINGLETON = {
-    .flags = NODE_HOLE,
+    .flags = NODE_HOLE | NODE_HAS_HOLE,
     // We use non-zero byte/nl counts here, so that the hole takes up space in
     // the metadata tree, and can thus be jumped to.
     .byte_count = 1,
@@ -100,8 +100,14 @@ meta_tree_t *create_tree(bool make_root) {
     meta_tree_t *tree = (meta_tree_t *)calloc(1, sizeof(meta_tree_t));
     tree->ref_count = 1;
 
-    if (make_root)
-        tree->root = create_leaf();
+    if (make_root) {
+        // Set the tree root as the hole node. This is both so that trees always
+        // have a valid state that can be iterated over, even with zero bytes,
+        // and also so that we don't need an extra allocation, because the hole
+        // node is a singleton, and the filler node is embedded in the tree.
+        tree->root = (meta_node_t *)&HOLE_NODE_SINGLETON;
+        tree->has_hole = true;
+    }
 
     // Flag the embedded filler node
     tree->filler_node->flags = NODE_FILLER;
@@ -150,17 +156,21 @@ static void set_leaf_meta_data(meta_node_t *node) {
 
 static void set_inner_meta_data(meta_node_t *node) {
     assert(node->flags & NODE_INNER);
+    node->flags &= ~NODE_HAS_HOLE;
     node->byte_count = 0;
     node->nl_count = 0;
     for (int32_t x = 0; x < MAX_CHILDREN; x++) {
-        if (node->inner.children[x]) {
-            node->byte_count += node->inner.children[x]->byte_count;
-            node->nl_count += node->inner.children[x]->nl_count;
+        meta_node_t *child = node->inner.children[x];
+        if (child) {
+            node->byte_count += child->byte_count;
+            node->nl_count += child->nl_count;
+            node->flags |= child->flags & NODE_HAS_HOLE;
         }
     }
 }
 
 void verify_node(meta_node_t *node) {
+    uint32_t old_flags = node->flags;
     uint32_t old_byte_count = node->byte_count;
     int32_t old_nl_count = node->nl_count;
     if (node->flags & (NODE_LEAF | NODE_FILLER))
@@ -174,17 +184,19 @@ void verify_node(meta_node_t *node) {
                 verify_node(node->inner.children[x]);
         set_inner_meta_data(node);
     }
+    assert(old_flags == node->flags);
     assert(old_byte_count == node->byte_count);
     assert(old_nl_count == node->nl_count);
 }
 
 meta_tree_t *read_data(chunk_t *chunk) {
     // Create tree
-    meta_tree_t *tree = create_tree(true);
+    meta_tree_t *tree = create_tree(false);
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
     // Fill in root node with all data
+    tree->root = create_leaf();
     tree->root->leaf.start = 0;
     tree->root->leaf.end = chunk->len;
     tree->root->leaf.chunk_data = chunk->data;
@@ -230,47 +242,14 @@ meta_tree_t *dumb_read_data(chunk_t *chunk) {
     return tree;
 }
 
-meta_node_t *make_slice_node(meta_iter_t *iter, meta_node_t *node,
-        uint64_t offset) {
-    *iter->slice_node = *node;
-    iter->slice_node->leaf.start += offset;
-    // Re-initialize metadata. Maybe we should have an option to not
-    // recalculate this if it's not needed...?
-    set_leaf_meta_data(iter->slice_node);
-    return iter->slice_node;
-}
-
-// Create a new tree without a hole by replacing the hole node with
-// the filler node
-meta_tree_t *patch_tree_hole(meta_tree_t *tree) {
-    assert(tree->has_hole);
-
-    // Jump an iterator to the start of the hole
-    meta_iter_t iter[1];
-    meta_node_t *hole = iter_start(iter, tree, tree->hole_offset.byte, 0);
-    assert(hole == tree->filler_node);
-    assert(hole->flags & NODE_FILLER);
-
-    // Replace the hole with the filler node
-    meta_node_t *filler = NULL;
-    if (tree->filler_node->leaf.end > tree->filler_node->leaf.start) {
-        filler = duplicate_node(tree->filler_node);
-        filler->flags = NODE_LEAF;
-    }
-    tree = replace_current_node(iter, filler, false);
-    tree->has_hole = false;
-
-    return tree;
-}
-
 offset_t get_tree_total_size(meta_tree_t *tree) {
     offset_t off = {
-        .byte = tree->root->byte_count,
-        .line = tree->root->nl_count
+        .line = tree->root->nl_count,
+        .byte = tree->root->byte_count
     };
     if (tree->has_hole) {
-        off.byte += tree->filler_node->byte_count - 1;
-        off.line += tree->filler_node->nl_count - 1;
+        off.line += (int64_t)tree->filler_node->nl_count - 1;
+        off.byte += (int64_t)tree->filler_node->byte_count - 1;
     }
     return off;
 }
@@ -278,9 +257,9 @@ offset_t get_tree_total_size(meta_tree_t *tree) {
 // XXX this is dumb
 uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line) {
     meta_iter_t iter[1];
-    (void)iter_start(iter, tree, 0, line);
+    (void)iter_start_at(iter, tree, line, 0);
     uint64_t start_offset = iter->start_offset.byte;
-    (void)iter_start(iter, tree, 0, line + 1);
+    (void)iter_start_at(iter, tree, line + 1, 0);
     return iter->start_offset.byte - start_offset;
 }
 
@@ -289,10 +268,10 @@ uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line) {
 ////////////////////////////////////////////////////////////////////////////////
 
 // Initialize an iterator object. Does not allocate, it should be on the stack
-void iter_init(meta_iter_t *iter, meta_tree_t *tree) {
+void iter_init(meta_iter_t *iter, meta_tree_t *tree, enum ITER_STATE start) {
     iter->tree = tree;
     iter->frame[0] = (meta_iter_frame_t) { .node = tree->root, .idx = 0,
-        .state = ITER_START };
+        .state = start };
     iter->start_offset = (offset_t) { 0, 0 };
     iter->end_offset = (offset_t) { 0, 0 };
     iter->desired_offset = (offset_t) { 0, 0 };
@@ -316,8 +295,8 @@ void iter_init(meta_iter_t *iter, meta_tree_t *tree) {
 #define YIELD(node)                                                   \
     do {                                                              \
         iter->start_offset = iter->end_offset;                        \
-        iter->end_offset.byte += (node)->byte_count;                  \
         iter->end_offset.line += (node)->nl_count;                    \
+        iter->end_offset.byte += (node)->byte_count;                  \
         iter->depth--;                                                \
         return (node);                                                \
     } while (0)
@@ -337,8 +316,11 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     YIELD(node);
 
                 // Check if this is a hole node. If so, yield the filler node
-                if (node->flags & NODE_HOLE)
+                if (node->flags & NODE_HOLE) {
+                    if (!iter->tree->filler_node->leaf.chunk_data)
+                        RETURN();
                     YIELD(iter->tree->filler_node);
+                }
 
                 frame->state = ITER_CHILDREN;
 
@@ -349,16 +331,18 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     meta_node_t *child = node->inner.children[frame->idx];
                     frame->idx++;
                     if (!child)
-                        break;
+                        continue;
                     CALL(child, ITER_START);
                 }
                 RETURN();
 
+            // Jump mode. Quickly skip over subtrees to get to a desired
+            // byte or line offset.
             case ITER_JUMP:
                 // Check for a leaf node or hole node, like ITER_START above
                 if (node->flags & NODE_LEAF)
                     YIELD(node);
-                if (node->flags & NODE_HOLE)
+                else if (node->flags & NODE_HOLE)
                     YIELD(iter->tree->filler_node);
 
                 // Reset the frame state to ITER_CHILDREN, since in JUMP mode
@@ -371,11 +355,11 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     meta_node_t *child = node->inner.children[frame->idx];
                     frame->idx++;
                     if (!child)
-                        break;
+                        continue;
 
                     // Check if the desired offset is within this subtree
-                    end.byte += child->byte_count;
                     end.line += child->nl_count;
+                    end.byte += child->byte_count;
 
                     if (iter->desired_offset.byte ?
                             (end.byte > iter->desired_offset.byte) :
@@ -387,6 +371,25 @@ meta_node_t *iter_next(meta_iter_t *iter) {
                     }
                 }
                 RETURN();
+
+            // Hole iteration mode
+            case ITER_HOLES:
+                // Minor optimization: we don't care about offsets, so don't
+                // use YIELD here, just the depth/return parts
+                if (node->flags & NODE_HOLE) {
+                    iter->depth--;
+                    return node;
+                }
+
+                if (node->flags & NODE_INNER) {
+                    while (frame->idx < MAX_CHILDREN) {
+                        meta_node_t *child = node->inner.children[frame->idx];
+                        frame->idx++;
+                        if (child && child->flags & NODE_HAS_HOLE)
+                            CALL(child, ITER_HOLES);
+                    }
+                }
+                RETURN();
         }
 next_iter:
         ;
@@ -395,132 +398,171 @@ next_iter:
     return NULL;
 }
 
+static meta_node_t *make_slice_node(meta_iter_t *iter, meta_node_t *node,
+        uint64_t offset) {
+    *iter->slice_node = *node;
+    iter->slice_node->leaf.start += offset;
+    // Re-initialize metadata. Maybe we should have an option to not
+    // recalculate this if it's not needed...?
+    set_leaf_meta_data(iter->slice_node);
+    return iter->slice_node;
+}
+
 // Initialize an iterator object, and return the first node, starting at
 // either <byte_offset> bytes or <line_offset> lines into the file.
 // Only one of byte_offset/line_offset can be non-zero.
-meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
-        uint64_t byte_offset, uint64_t line_offset) {
-    iter_init(iter, tree);
-
-    if (byte_offset || line_offset) {
-        // Use the ITER_JUMP machinery to skip all parts of the tree before
-        // the desired offset
-        iter->frame[0].state = ITER_JUMP;
-        iter->desired_offset = (offset_t) { byte_offset, line_offset };
-
-        // See if we're jumping inside or past the hole. If so, we fake the
-        // offset to the iterator jump, since the size of the hole is not
-        // updated in the tree metadata.
-        offset_t hole_offset = { 0, 0 };
-        if (tree->has_hole) {
-            if (byte_offset > tree->hole_offset.byte) {
-                // Jumping inside the filler node: make the iterator jump to
-                // the hole node
-                if (byte_offset < tree->hole_offset.byte +
-                        tree->filler_node->byte_count)
-                    iter->desired_offset.byte = tree->hole_offset.byte;
-                // Past the filler node: subtract an offset to account for
-                // the size of the filler node, which isn't accounted for
-                // in the main tree, and add one, to account for the size
-                // of the hole node
-                else {
-                    hole_offset.byte = tree->filler_node->byte_count - 1;
-                    iter->desired_offset.byte -= hole_offset.byte;
-                }
-            }
-            // Same exact logic as above, except for lines
-            if (line_offset > tree->hole_offset.line) {
-                if (line_offset < tree->hole_offset.line +
-                        tree->filler_node->nl_count)
-                    iter->desired_offset.line = tree->hole_offset.line;
-                else {
-                    hole_offset.line = tree->filler_node->nl_count - 1;
-                    iter->desired_offset.line -= hole_offset.line;
-                }
-            }
-
-            // Don't bother with the jump stuff if the hole if we ended
-            // up jumping to the beginning
-            if (!iter->desired_offset.byte && !iter->desired_offset.line)
-                iter->frame[0].state = ITER_START;
-        }
-
-        meta_node_t *node = iter_next(iter);
-        if (!node)
-            return NULL;
-
-        iter->start_offset.byte += hole_offset.byte;
-        iter->start_offset.line += hole_offset.line;
-        iter->end_offset.byte += hole_offset.byte;
-        iter->end_offset.line += hole_offset.line;
-
-        uint64_t offset = 0;
-        if (byte_offset) {
-            assert(!line_offset);
-            assert(byte_offset >= iter->start_offset.byte);
-            // HACK: normally we should end up in [start, end), but with
-            // a zero-width filler node, we can't really fit...
-            assert(byte_offset < iter->end_offset.byte ||
-                    (byte_offset == iter->end_offset.byte &&
-                    byte_offset == iter->start_offset.byte &&
-                    node->flags & NODE_FILLER));
-
-            // Exact match
-            if (iter->start_offset.byte == byte_offset)
-                return node;
-
-            // Set offset to desired byte
-            offset = byte_offset - iter->start_offset.byte;
-        } else {
-            assert(line_offset);
-            assert(line_offset >= iter->start_offset.line);
-            assert(line_offset <= iter->end_offset.line);
-
-            // Exact match
-            if (iter->start_offset.line == line_offset)
-                return node;
-
-            // Jump through newlines in this piece until we reach the
-            // desired line
-            uint64_t len = node->leaf.end - node->leaf.start;
-            uint8_t *nl;
-            const uint8_t *start = node->leaf.chunk_data + node->leaf.start;
-            while (iter->start_offset.line < line_offset && offset < len &&
-                    (nl = memchr(start, '\n', len - offset)) != NULL) {
-                offset += nl + 1 - start;
-                start = nl + 1;
-                iter->start_offset.line++;
-            }
-        }
-
-        // The desired byte offset is somewhere in the middle. Rather than
-        // try to make a weird API to pass this information to the caller,
-        // create a slice node with just the slice we want
-        meta_node_t *slice = make_slice_node(iter, node, offset);
-
-        // Update the offset. The byte is simple, but for newlines we use
-        // a delta between the old and new nodes so we don't have to scan
-        // both sides of the split.
-        iter->start_offset.byte += offset;
-        iter->start_offset.line += node->nl_count - slice->nl_count;
-
-        return slice;
+meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
+        uint64_t line_offset, uint64_t byte_offset) {
+    // If line_offset and byte_offset are both non-zero, that needs to be
+    // handled specially. Right now this needs to be done with two jumps,
+    // since the actual jump destination could be arbitrarily far in the
+    // tree from the start of the line. Maybe this could be optimized a bit...
+    if (line_offset > 0 && byte_offset > 0) {
+        (void)iter_start_at(iter, tree, line_offset, 0);
+        line_offset = 0;
+        byte_offset = iter->start_offset.byte + byte_offset;
     }
 
-    // Default case: just start the normal iteration
-    return iter_next(iter);
+    iter_init(iter, tree, ITER_JUMP);
+
+    // Use the ITER_JUMP machinery to skip all parts of the tree before
+    // the desired offset
+    iter->desired_offset = (offset_t) { line_offset, byte_offset };
+
+    // See if we're jumping inside or past the hole. If so, we fake the
+    // offset to the iterator jump, since the size of the hole is not
+    // updated in the tree metadata.
+    offset_t hole_delta = { 0, 0 };
+    if (tree->has_hole) {
+        if (byte_offset > tree->hole_offset.byte) {
+            // Jumping inside the filler node: make the iterator jump to
+            // the hole node
+            if (byte_offset < tree->hole_offset.byte +
+                    tree->filler_node->byte_count)
+                iter->desired_offset.byte = tree->hole_offset.byte;
+            // Past the filler node: subtract an offset to account for
+            // the size of the filler node, which isn't accounted for
+            // in the main tree, and add one, to account for the size
+            // of the hole node
+            else {
+                hole_delta.byte = (int64_t)tree->filler_node->byte_count - 1;
+                hole_delta.line = (int64_t)tree->filler_node->nl_count - 1;
+                iter->desired_offset.byte -= hole_delta.byte;
+            }
+        }
+        // Same exact logic as above, except for lines
+        else if (line_offset > tree->hole_offset.line) {
+            if (line_offset <= tree->hole_offset.line +
+                    tree->filler_node->nl_count) {
+                // Jump to the exact byte offset of the hole, rather than
+                // using a line offset, which is fuzzy/imperfect. That is,
+                // if the hole starts on line X, there can be many nodes
+                // before and after that are on the same line.
+                iter->desired_offset.byte = tree->hole_offset.byte;
+                iter->desired_offset.line = 0;
+            } else {
+                hole_delta.byte = (int64_t)tree->filler_node->byte_count - 1;
+                hole_delta.line = (int64_t)tree->filler_node->nl_count - 1;
+                iter->desired_offset.line -= hole_delta.line;
+            }
+        }
+
+        // Don't bother with the jump stuff if the hole if we ended
+        // up jumping to the beginning
+        if (!iter->desired_offset.byte && !iter->desired_offset.line)
+            iter->frame[0].state = ITER_START;
+    }
+
+    meta_node_t *node;
+    // Special cases that we handle here to keep iter_next() simple and fast:
+    // the tree either has no root, or the root is a leaf or hole node. In
+    // these cases, ITER_JUMP doesn't quite work properly (it assumes that
+    // when it reaches a leaf/hole node, the earlier levels of the stack have
+    // checked that we're jumping to the right offset).
+    if (!tree->root) {
+        node = NULL;
+        iter->depth--;
+    } else if (tree->root->flags & (NODE_LEAF | NODE_HOLE)) {
+        node = tree->root;
+        if (iter->desired_offset.byte > 0 || iter->desired_offset.line > 0) {
+            iter->start_offset.line += node->nl_count;
+            iter->start_offset.byte += node->byte_count;
+            iter->end_offset.line += node->nl_count;
+            iter->end_offset.byte += node->byte_count;
+        }
+        if (node->flags & NODE_HOLE)
+            node = iter->tree->filler_node;
+        // Make sure we're not trying to iterate past this node
+        if (!node->leaf.chunk_data || (iter->desired_offset.byte ?
+                (iter->desired_offset.byte >= iter->end_offset.byte) :
+                (iter->desired_offset.line > iter->end_offset.line))) {
+            node = NULL;
+            iter->depth--;
+        }
+    } else
+        node = iter_next(iter);
+
+    iter->start_offset.line += hole_delta.line;
+    iter->start_offset.byte += hole_delta.byte;
+    iter->end_offset.line += hole_delta.line;
+    iter->end_offset.byte += hole_delta.byte;
+
+    if (!node)
+        return NULL;
+
+    uint64_t offset = 0;
+    if (!line_offset) {
+        assert(byte_offset >= iter->start_offset.byte);
+        assert(byte_offset < iter->end_offset.byte ||
+                (byte_offset == 0 && iter->end_offset.byte == 0));
+
+        // Exact match
+        if (iter->start_offset.byte == byte_offset)
+            return node;
+
+        // Set offset to desired byte
+        offset = byte_offset - iter->start_offset.byte;
+    } else {
+        assert(!byte_offset);
+        assert(line_offset >= iter->start_offset.line);
+        assert(line_offset <= iter->end_offset.line);
+
+        // Exact match
+        if (iter->start_offset.line == line_offset)
+            return node;
+
+        // Jump through newlines in this piece until we reach the
+        // desired line
+        uint64_t len = node->leaf.end - node->leaf.start;
+        uint8_t *nl;
+        const uint8_t *start = node->leaf.chunk_data + node->leaf.start;
+        while (iter->start_offset.line < line_offset && offset < len &&
+                (nl = memchr(start, '\n', len - offset)) != NULL) {
+            offset += nl + 1 - start;
+            start = nl + 1;
+            iter->start_offset.line++;
+        }
+    }
+
+    // The desired byte offset is somewhere in the middle. Rather than
+    // try to make a weird API to pass this information to the caller,
+    // create a slice node with just the slice we want
+    meta_node_t *slice = make_slice_node(iter, node, offset);
+
+    // Update the offset. The byte is simple, but for newlines we use
+    // a delta between the old and new nodes so we don't have to scan
+    // both sides of the split.
+    iter->start_offset.byte += offset;
+
+    if (line_offset == 0)
+        iter->start_offset.line += node->nl_count - slice->nl_count;
+
+    return slice;
 }
 
-// This is a helper function that combines the line_offset and byte_offset
-// functionalities from iter_start() together, to jump to a byte offset from
-// the start of a line. This needs to be done with two jumps, since the actual
-// jump destination could be arbitrarily far in the tree from the start of the
-// line. Maybe this could be optimized a bit...
-meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
-        uint64_t line_offset, uint64_t byte_offset) {
-    (void)iter_start(iter, tree, 0, line_offset);
-    return iter_start(iter, tree, iter->start_offset.byte + byte_offset, 0);
-}
+////////////////////////////////////////////////////////////////////////////////
+// Mutation ////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
 // From inside an iterator, create a new tree with the current node replaced.
 // This is a slightly awkward API perhaps, but we want to use most of the same
@@ -528,23 +570,14 @@ meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
 // around so we have the full path from root to leaf.
 // This modifies the iterator in-place to continue iteration from the new
 // tree.
-meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
-        bool create_hole) {
-    meta_tree_t *tree;
-    // If we're creating a new hole and there's already a hole in this tree,
-    // patch it up. We don't bother if we're replacing the hole itself.
-    // This is recursive, but can only go one deep.
-    if (create_hole && iter->tree->has_hole &&
-            !(iter->frame[iter->depth].node->flags & NODE_HOLE))
-        tree = patch_tree_hole(iter->tree);
-    else
-        tree = duplicate_tree(iter->tree);
+static meta_tree_t *replace_current_node(meta_iter_t *iter,
+        meta_node_t *new_node) {
+    iter->tree = duplicate_tree(iter->tree);
 
     // Walk back up the stack, copying each parent node in succession
     for (uint32_t depth = iter->depth; depth > 0; depth--) {
         meta_iter_frame_t *frame = &iter->frame[depth - 1];
         meta_node_t *old_parent = frame->node;
-        assert(frame->state == ITER_CHILDREN);
         assert(old_parent->flags & NODE_INNER);
 
         // Copy this node, replace the current child, and bump refcounts
@@ -565,42 +598,66 @@ meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
 
     // XXX update chunk map, when we care about it...
 
-    tree->root = new_node;
-    iter->tree = tree;
-    if (create_hole) {
-        tree->has_hole = true;
-        tree->hole_offset = iter->start_offset;
-    }
-    return tree;
+    // Replace the tree root with the new parent that bubbled up here
+    iter->tree->root = new_node;
+    return iter->tree;
 }
 
-// Like replace_current_node() above, but splits a node into two at the current
-// iteration offset, and creates a hole between them. We take the current node
-// as a parameter, since we don't generally store the just-yielded node inside
-// the iterator, and we frequently jump into the middle of nodes and create
-// slice nodes, so we can't easily derive it. We can compare the yielded node
-// with the node at the top of the iteration tree, and thus find how far into
-// the latter node we need to split.
-meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
-    meta_node_t *parent = create_node();
+// Create a new tree without a hole by replacing the hole node with
+// the filler node
+meta_tree_t *patch_tree_hole(meta_tree_t *tree) {
+    assert(tree->has_hole);
+
+    // First, find the hole in the tree
+    meta_iter_t iter[1];
+    iter_init(iter, tree, ITER_HOLES);
+    meta_node_t *hole = iter_next(iter);
+    assert(hole == &HOLE_NODE_SINGLETON);
+    assert(hole->flags & NODE_HOLE);
+
+    // Replace the hole with the filler node if the filler node has
+    // non-zero size, otherwise delete that branch
+    meta_node_t *old_filler = tree->filler_node;
+    meta_node_t *new_filler = NULL;
+    if (old_filler->leaf.chunk_data &&
+            old_filler->leaf.end > old_filler->leaf.start) {
+        new_filler = duplicate_node(old_filler);
+        new_filler->flags = NODE_LEAF;
+    }
+    meta_tree_t *new_tree = replace_current_node(iter, new_filler);
+    new_tree->has_hole = false;
+
+    return new_tree;
+}
+
+// Create a new hole at the given offset of the tree, and return the resulting
+// tree
+meta_tree_t *split_at_offset(meta_tree_t *tree, uint64_t line_offset,
+        uint64_t byte_offset) {
+    // Patch the existing hole if there's already one
+    if (tree->has_hole)
+        tree = patch_tree_hole(tree);
+
+    meta_iter_t iter[1];
+    meta_node_t *node = iter_start_at(iter, tree, line_offset, byte_offset);
+
+    assert(!node || node == iter->slice_node ||
+            node == iter->frame[iter->depth].node);
 
     // There are two main cases to handle here, based on whether the jump
     // offset started perfectly on a node or not. Right now we can always
     // determine this based on whether we got the slice node from the iterator.
+    meta_node_t *parent = create_node();
     if (node == iter->slice_node) {
         // Get the base node that the current node is a slice of
         // This is a tiny hack, in that it looks into the stack frame that
         // just got "popped", to see the node that is current
         meta_iter_frame_t *frame = &iter->frame[iter->depth];
         meta_node_t *base_node = frame->node;
-        if (base_node->flags & NODE_HOLE) {
-            assert(iter->tree->has_hole);
-            base_node = iter->tree->filler_node;
-        }
 
         // Sanity check that this is the right base node
-        assert(node->flags & (NODE_LEAF | NODE_FILLER));
-        assert(base_node->flags & (NODE_LEAF | NODE_FILLER));
+        assert(node->flags & NODE_LEAF);
+        assert(base_node->flags & NODE_LEAF);
         assert(node->leaf.chunk_data == base_node->leaf.chunk_data);
         assert(node->leaf.start > base_node->leaf.start);
         assert(node->leaf.end == base_node->leaf.end);
@@ -615,11 +672,6 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
         child_l->byte_count -= child_r->byte_count;
         child_l->nl_count -= child_r->nl_count;
 
-        // Reset the flags of both duplicated nodes, in case we are splitting
-        // a filler node
-        child_l->flags = NODE_LEAF;
-        child_r->flags = NODE_LEAF;
-
         // XXX This logic is MAX_CHILDREN==2 specific
         meta_node_t *sub_parent = create_node();
         sub_parent->inner.children[0] = child_l;
@@ -628,6 +680,14 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
 
         parent->inner.children[0] = sub_parent;
         parent->inner.children[1] = child_r;
+        set_inner_meta_data(parent);
+    }
+    // No node: this means we're appending the hole at the end.
+    else if (!node) {
+        assert(iter->depth == 0);
+        // XXX This logic is MAX_CHILDREN==2 specific
+        parent->inner.children[0] = iter->tree->root;
+        parent->inner.children[1] = (meta_node_t *)&HOLE_NODE_SINGLETON;
         set_inner_meta_data(parent);
     }
     // Not the slice node: we are making a hole at the boundary between
@@ -641,12 +701,23 @@ meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node) {
         set_inner_meta_data(parent);
     }
 
-    meta_tree_t *tree = replace_current_node(iter, parent, true);
+    tree = replace_current_node(iter, parent);
+
+    tree->has_hole = true;
+    tree->hole_offset = iter->start_offset;
+
     // Mark the filler node of the new tree as fresh
     tree->filler_node->leaf.chunk_data = NULL;
+    tree->filler_node->leaf.start = 0;
+    tree->filler_node->leaf.end = 0;
+    tree->filler_node->byte_count = 0;
+    tree->filler_node->nl_count = 0;
+
     return tree;
 }
 
+// Add some bytes to the end of the filler node. This can generally be done
+// quickly if the filler node is pointing at a chunk with space at the end.
 meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
     uint64_t len) {
     assert(tree->has_hole);
@@ -675,28 +746,10 @@ meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
 
 // Helper function: split the tree at the given offset, and insert the
 // given bytes into the filler node
-meta_tree_t *insert_bytes_at_current_node(meta_iter_t *iter, meta_tree_t *tree,
-        meta_node_t *node, const uint8_t *data, uint64_t len) {
-    tree = split_current_node(iter, node);
-
-    meta_node_t *new_node = tree->filler_node;
-
-    new_node->leaf.chunk_data = write_data_bytes(data, len,
-            &new_node->leaf.start, &new_node->leaf.end);
-
-    set_leaf_meta_data(new_node);
-
-    return tree;
-}
-
-// Helper function: split the tree at the given offset, and insert the
-// given bytes into the filler node
-meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
-        const uint8_t *data, uint64_t len) {
-    meta_iter_t iter[1];
-    meta_node_t *old_node = iter_start(iter, tree, offset, 0);
-    return insert_bytes_at_current_node(iter, tree, old_node,
-            data, len);
+meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
+        uint64_t byte_offset, const uint8_t *data, uint64_t len) {
+    tree = split_at_offset(tree, line_offset, byte_offset);
+    return append_bytes_to_filler(tree, data, len);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -711,7 +764,7 @@ const char *read_chunk(void *payload, uint32_t byte_offset, TSPoint position,
     // detect when they ask for a byte offset that isn't where we last left
     // off, and jump to that place in the tree
     if (byte_offset != iter->end_offset.byte)
-        node = iter_start(iter, iter->tree, byte_offset, 0);
+        node = iter_start_at(iter, iter->tree, 0, byte_offset);
     else
         node = iter_next(iter);
 
@@ -732,7 +785,7 @@ TSTree *parse_c_tree(meta_tree_t *tree) {
     ts_parser_set_language(parser, tree_sitter_c());
 
     meta_iter_t iter[1];
-    iter_init(iter, tree);
+    iter_init(iter, tree, ITER_START);
 
     TSInput input = {
         .payload = (void *)iter,

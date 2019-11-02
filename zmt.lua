@@ -94,18 +94,18 @@ local NODE_HOLE   = bit.lshift(1, zmt.node_hole_bit)
 local NODE_FILLER = bit.lshift(1, zmt.node_filler_bit)
 local MAX_CHILDREN = 2
 
-function module.iter_start(tree, byte_offset, line_offset)
+function module.iter_start(tree, line_offset, byte_offset)
     byte_offset = byte_offset or 0
     line_offset = line_offset or 0
     local iter = ffi.new('meta_iter_t[1]')
-    local node = zmt.iter_start(iter, tree, byte_offset, line_offset)
+    local node = zmt.iter_start_at(iter, tree, line_offset, byte_offset)
     return iter, node
 end
 
 -- Iterate through the given piece tree, starting at the given offset
-function module.iter_nodes(tree, byte_offset, line_offset)
+function module.iter_nodes(tree, line_offset, byte_offset)
     return coroutine.wrap(function()
-        local iter, node = module.iter_start(tree, byte_offset, line_offset)
+        local iter, node = module.iter_start(tree, line_offset, byte_offset)
         while node ~= nil do
             local l = node.leaf
             -- end is a keyword. Oh well, it's the proper variable name
@@ -123,7 +123,7 @@ function module.iter_lines(tree, line_start, line_end)
     return coroutine.wrap(function()
         -- Start a piece iterator at the start line
         local line = line_start
-        for iter, node, piece in module.iter_nodes(tree, 0, line_start) do
+        for iter, node, piece in module.iter_nodes(tree, line_start, 0) do
             -- Chop up this piece into lines. We only do the scan the exact
             -- number of times needed
             local offset = tonumber(iter.start_offset.byte)
@@ -131,7 +131,7 @@ function module.iter_lines(tree, line_start, line_end)
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')
                 assert(idx ~= nil)
-                local part = piece:sub(1, idx - 1)
+                local part = piece:sub(1, idx)
                 piece = piece:sub(idx + 1)
                 coroutine.yield(line, offset, true, part)
                 offset = offset + idx
@@ -951,20 +951,6 @@ local function run_tui(paths, dumb_tui)
 
         if action == QUIT then
             break
-        elseif action == ENTER_NORMAL then
-            current_mode = NORMAL_MODE
-            -- HACK: there's some bug with detecting holes, so patch it
-            window.buf.tree = zmt.patch_tree_hole(window.buf.tree)
-        elseif action == ENTER_INSERT then
-            current_mode = INSERT_MODE
-            -- Iterate to the offset of the cursor, and split off a filler
-            -- node.
-            local line, byte = window.get_cursor()
-            local iter = ffi.new('meta_iter_t[1]')
-            local node = zmt.iter_start_offset_from_line(iter, window.buf.tree,
-                    line, byte)
-            window.buf.tree = zmt.split_current_node(iter,
-                    node)
         elseif action_is_window_switch(action) then
             local offset = (action == WINDOW_NEXT and 1 or -1)
             cur_win = (cur_win + offset - 1) % #windows + 1
@@ -991,6 +977,17 @@ local function run_tui(paths, dumb_tui)
             end
         elseif action_is_cursor(action) then
             window.handle_cursor(action)
+
+        ------------------------------------------------------------------------
+        -- Insert Mode ---------------------------------------------------------
+        ------------------------------------------------------------------------
+        elseif action == ENTER_INSERT then
+            current_mode = INSERT_MODE
+            -- Split the tree at the cursor offset
+            local line, byte = window.get_cursor()
+            window.buf.tree = zmt.split_at_offset(window.buf.tree, line, byte)
+        elseif action == EXIT_INSERT then
+            current_mode = NORMAL_MODE
         elseif action == INSERT_CHAR then
             assert(current_mode == INSERT_MODE)
 

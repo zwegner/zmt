@@ -64,8 +64,8 @@
 // of the filler gets larger, the benefit starts to disappear.
 
 typedef struct {
-    int64_t byte;
     int64_t line;
+    int64_t byte;
 } offset_t;
 
 // chunk_t holds big chunks of contiguous backing memory
@@ -105,11 +105,14 @@ typedef struct {
 #define MAX_CHILDREN            (2)
 
 // Flags
-enum { node_inner_bit, node_leaf_bit, node_hole_bit, node_filler_bit };
+enum { node_inner_bit, node_leaf_bit, node_hole_bit, node_filler_bit,
+    node_has_hole_bit = 7};
 #define NODE_INNER              (1 << node_inner_bit)
 #define NODE_LEAF               (1 << node_leaf_bit)
 #define NODE_HOLE               (1 << node_hole_bit)
 #define NODE_FILLER             (1 << node_filler_bit)
+
+#define NODE_HAS_HOLE           (1 << node_has_hole_bit)
 
 typedef struct meta_node_t {
     uint32_t ref_count;
@@ -170,6 +173,7 @@ enum ITER_STATE {
     ITER_START,
     ITER_CHILDREN,
     ITER_JUMP,
+    ITER_HOLES,
 };
 
 // Stack frame for iterative tree walking
@@ -224,17 +228,14 @@ offset_t get_tree_total_size(meta_tree_t *tree);
 uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line);
 
 // Iteration
-void iter_init(meta_iter_t *iter, meta_tree_t *tree);
+void iter_init(meta_iter_t *iter, meta_tree_t *tree, enum ITER_STATE start);
 meta_node_t *iter_next(meta_iter_t *iter);
-meta_node_t *iter_start(meta_iter_t *iter, meta_tree_t *tree,
-        uint64_t byte_offset, uint64_t line_offset);
-meta_node_t *iter_start_offset_from_line(meta_iter_t *iter, meta_tree_t *tree,
+meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
         uint64_t line_offset, uint64_t byte_offset);
 
 // Mutation
-meta_tree_t *replace_current_node(meta_iter_t *iter, meta_node_t *new_node,
-        bool create_hole);
-meta_tree_t *split_current_node(meta_iter_t *iter, meta_node_t *node);
+meta_tree_t *split_at_offset(meta_tree_t *tree, uint64_t line_offset,
+        uint64_t byte_offset);
 meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
     uint64_t len);
 
@@ -242,11 +243,8 @@ meta_tree_t *append_bytes_to_filler(meta_tree_t *tree, const uint8_t *data,
 void verify_node(meta_node_t *node);
 
 // XXX experimental/test apis
-meta_tree_t *patch_tree_hole(meta_tree_t *tree);
-meta_tree_t *insert_bytes_at_current_node(meta_iter_t *iter, meta_tree_t *tree,
-        meta_node_t *node, const uint8_t *data, uint64_t len);
-meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t offset,
-        const uint8_t *data, uint64_t len);
+meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
+        uint64_t byte_offset, const uint8_t *data, uint64_t len);
 meta_tree_t *dumb_read_data(chunk_t *chunk);
 
 // Tree-sitter stuff
