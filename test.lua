@@ -3,6 +3,12 @@ require('stdlib')
 local zmt = require('zmt')
 
 -- Helpers
+
+local TEST_NAME = ''
+local function test_name(name)
+    TEST_NAME = name
+end
+
 local function piece_list(tree)
     local l = {}
     for iter, node, piece in zmt.iter_nodes(tree, 0, 0) do
@@ -34,27 +40,42 @@ local function check_tree(tree, exp_pieces, exp_lines)
     local tree_size = zmt.zmt.get_tree_total_size(tree)
 
     -- Verify we got the expected pieces/lines
-    assert_eq(pieces, exp_pieces)
-    assert_eq(lines, exp_lines)
+    assert_eq(pieces, exp_pieces, 'pieces match')
+    assert_eq(lines, exp_lines, 'lines match')
 
     -- Verify we get the right number of bytes
     local raw_bytes = table.concat(pieces)
-    assert_eq(tree_size.byte, #raw_bytes)
+    assert_eq(tree_size.byte, #raw_bytes, 'byte size matches')
 
     local raw_bytes_nonl = table.concat(lines)
-    assert_eq(tree_size.byte - tree_size.line, #raw_bytes_nonl)
+    assert_eq(tree_size.byte, #raw_bytes_nonl, 'line byte size matches')
     -- tree_size.line counts newlines, but lines is newline-separated strings,
     -- thus contains 1 more entry
-    assert_eq(tree_size.line + 1, #lines)
+    assert_eq(tree_size.line + 1, #lines, 'line count matches')
+
+    -- Make sure a crazy offset works
+    for i, byte, line in iter_unpack{{1e10, 0}, {0, 1e10}} do
+        local iter, node = zmt.iter_start(tree, line, byte)
+        assert_eq(node, nil, 'big jump finishes the iterator')
+        assert_eq(iter[0].start_offset.byte, tree_size.byte,
+                'big jump gets the right offset')
+    end
+
+    -- Verify that all the line lengths are correct
+    for i, line in ipairs(lines) do
+        assert_eq(zmt.zmt.get_tree_line_length(tree, i - 1), #line,
+            ('length of line %s matches'):format(i))
+    end
 end
 
 local function tree_insert_bytes(tree, offset, data)
-    return zmt.zmt.insert_bytes_at_offset(tree, offset, data, #data)
+    return zmt.zmt.insert_bytes_at_offset(tree, 0, offset, data, #data)
 end
 
 -- Tests
 local TESTS = {
     test_stdlib = function ()
+        test_name('assert')
         assert_eq(0, 0)
         assert_neq(0, 1)
         assert_neq(0, '0')
@@ -68,26 +89,84 @@ local TESTS = {
         assert_neq({{1}, {1, 2}}, {{1}, {1, 2, 3}})
     end,
 
-    test_tree = function ()
+    test_tree_1 = function ()
+        test_name('basic tree 1')
         local tree = zmt.zmt.create_tree(true)
-        check_tree(tree, {''}, {''})
+        check_tree(tree, {}, {''})
 
         -- XXX leaves a node with no bytes
+        test_name('basic tree 2')
         tree = tree_insert_bytes(tree, 0, 'a\nb')
-        check_tree(tree, {'a\nb', ''}, {'a', 'b'})
+        check_tree(tree, {'a\nb'}, {'a\n', 'b'})
 
-        tree = tree_insert_bytes(tree, 1, 'a')
-        check_tree(tree, {'a', 'a', '\nb', ''}, {'aa', 'b'})
+        test_name('basic tree 3')
+        tree = tree_insert_bytes(tree, 1, 'c')
+        check_tree(tree, {'a', 'c', '\nb'}, {'ac\n', 'b'})
+
+        -- Modify in two spots, on either side of the current hole
+        test_name('basic tree 4')
+        new_tree_1 = tree_insert_bytes(tree, 1, 'd')
+        check_tree(new_tree_1, {'a', 'd', 'c', '\nb'}, {'adc\n', 'b'})
+
+        test_name('basic tree 5')
+        new_tree_2 = tree_insert_bytes(tree, 2, 'd')
+        check_tree(new_tree_2, {'a', 'c', 'd', '\nb'}, {'acd\n', 'b'})
+
+        -- Make sure the old tree is untouched
+        test_name('basic tree 6')
+        check_tree(tree, {'a', 'c', '\nb'}, {'ac\n', 'b'})
+
+        -- Verify zero-width fillers are patched properly
+        for i = 0, 2 do
+            test_name('basic tree 7+'..i)
+            tree = zmt.zmt.split_at_offset(tree, 0, i)
+            check_tree(tree, {'a', 'c', '\nb'}, {'ac\n', 'b'})
+        end
+    end,
+
+    test_tree_2 = function ()
+        test_name('tree 2')
+        local tree = zmt.zmt.create_tree(true)
+
+        local piece = '0123456789\n'
+        for i = 1, 10 do
+            tree = tree_insert_bytes(tree, 1e10, piece)
+        end
+        local pieces = rep(piece, 10)
+        local lines = concat(pieces, {''})
+        check_tree(tree, pieces, lines)
+
+        -- Insert a bunch of times into the middle of lines
+        test_name('tree 2--split lines')
+        for i = 1, 10 do
+            -- Dumb index math
+            local off = 5 + 14 * (i-1)
+            local idx = (i-1)*3 + 1
+            tree = tree_insert_bytes(tree, off, 'xxx')
+            pieces[idx] = '56789\n'
+            table.insert(pieces, idx, 'xxx')
+            table.insert(pieces, idx, '01234')
+            lines[i] = '01234xxx56789\n'
+        end
+        check_tree(tree, pieces, lines)
     end,
 }
 
+local test_filter = #arg > 0 and arg[1]
+
 for name, fn in pairs(TESTS) do
-    io.stdout:write(right_pad('Running ' .. name .. '...', 50))
-    local ok, res = xpcall(fn, debug.traceback)
-    if ok then
-        print('[\027[32mPASS\027[0m]')
-    else
-        print('[\027[31mFAIL\027[0m]')
-        print(res)
+    if not test_filter or name:find(test_filter) then
+        io.stdout:write(right_pad('Running ' .. name .. '...', 50))
+        TEST_NAME = ''
+        local ok, res = xpcall(fn, debug.traceback)
+        if ok then
+            print('[\027[32mPASS\027[0m]')
+        else
+            print('[\027[31mFAIL\027[0m]')
+            if #TEST_NAME > 0 then
+                print(('  inside test [%s]:'):format(TEST_NAME))
+            end
+            print(res)
+        end
     end
 end

@@ -1,12 +1,16 @@
 -- "stdlib" stuff that is generic enough to just stick in global scope
 
+function fmt(...)
+    local fmt = ('%s '):rep(#{...})
+    return fmt:format(...)
+end
+
 function logf(fmt, ...)
-    io.stderr:write(fmt:format(...) .. '\n')
+    io.stderr:write(fmt:format(...))
 end
 
 function log(...)
-    local fmt = ('%s '):rep(#{...})
-    logf(fmt, ...)
+    logf(fmt(...) .. '\n')
 end
 
 function range(start, stop, step)
@@ -71,6 +75,14 @@ function concat(...)
     return result
 end
 
+function rep(v, n)
+    local result = {}
+    for _ = 1, n do
+        result[#result + 1] = v
+    end
+    return result
+end
+
 -- Nested equality comparison. Ignores metatables. Returns a table {false, msg}
 -- if not equal, or nil otherwise, mostly for an easy interface
 local function equals(a, b, path)
@@ -90,20 +102,23 @@ local function equals(a, b, path)
             end
         end
     elseif a ~= b then
-        msg = ('values not equal: %s ~= %s'):format(str(a), str(b))
+        msg = ('%s ~= %s'):format(str(a), str(b))
         if #path > 0 then
-            msg = msg .. ', through path ' ..  astr(path)
+            path = '[' .. table.concat(path, '][') .. ']'
+            msg = msg .. ', in index ' ..  path
         end
         return {false, msg}
     end
 end
 
-function assert_eq(a, b)
-    local r = equals(a, b, {}) or {true}
-    return assert(unpack(r))
+function assert_neq(a, b, name, expected)
+    expected = expected or false
+    local result, msg = unpack(equals(a, b, {}) or {true})
+    msg = ('assertion%s failed%s'):format(name and ' ['..name..']' or '',
+        msg and ': ' .. msg or '')
+    return assert(result == expected, msg)
 end
 
-function assert_neq(a, b)
-    local r = equals(a, b, {}) or {true}
-    return assert(not unpack(r))
+function assert_eq(a, b, name)
+    return assert_neq(a, b, name, true)
 end
