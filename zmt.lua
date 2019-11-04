@@ -52,7 +52,7 @@ local
     INSERT_CHAR,
     -- Cursor
     _CURSOR_MIN, CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
-    CURSOR_HOME, CURSOR_END, CURSOR_NL, _CURSOR_MAX,
+    CURSOR_HOME, CURSOR_END, CURSOR_FIRST, CURSOR_LAST, CURSOR_NL, _CURSOR_MAX,
     -- Scrolling
     SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP, SCROLL_HALFPAGE_DOWN,
     -- Mouse events
@@ -654,6 +654,8 @@ local INPUT_TABLES = {
         ['l']               = CURSOR_RIGHT,
         ['0']               = CURSOR_HOME,
         ['$']               = CURSOR_END,
+        ['gg']              = CURSOR_FIRST,
+        ['G']               = CURSOR_LAST,
 
         ['i']               = ENTER_INSERT,
         ['v']               = ENTER_VISUAL,
@@ -678,6 +680,8 @@ local INPUT_TABLES = {
         ['l']               = CURSOR_RIGHT,
         ['0']               = CURSOR_HOME,
         ['$']               = CURSOR_END,
+        ['gg']              = CURSOR_FIRST,
+        ['G']               = CURSOR_LAST,
     }
 }
 
@@ -843,6 +847,10 @@ local function get_cursor_movement(action)
         return 0, -1e100
     elseif action == CURSOR_END then
         return 0, 1e100
+    elseif action == CURSOR_FIRST then
+        return -1e100, 0
+    elseif action == CURSOR_LAST then
+        return 1e100, 0
     elseif action == CURSOR_NL then
         return 1, -1e100
     end
@@ -875,13 +883,17 @@ local function Window(buf, rows, cols, y, x)
 
     function self.handle_cursor(action)
         local dy, dx = get_cursor_movement(action)
-        self.curs_line = math.max(0, math.min(self.curs_line + dy,
-                tonumber(buf.get_line_count() - 1)))
-        -- XXX multibyte
-        local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
-                    self.curs_line)) - 2
-        self.curs_byte = math.max(0, math.min(self.curs_byte + dx,
-                len))
+        self.curs_line = self.curs_line + dy
+        self.curs_byte = self.curs_byte + dx
+        self.clip_cursor()
+
+        if self.curs_line < self.start_line then
+            self.start_line = self.curs_line
+        -- XXX line/row size. also, # of rows with status line
+        elseif self.curs_line > self.start_line + self.rows - 2 then
+            self.start_line = self.curs_line - self.rows + 2
+        end
+        self.clip_view()
     end
 
     function self.mark_cursor(row, col)
@@ -900,17 +912,30 @@ local function Window(buf, rows, cols, y, x)
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
+    function self.clip_cursor()
+        self.curs_line = math.max(0, math.min(self.curs_line,
+                buf.get_line_count() - 1))
+        -- XXX multibyte
+        local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
+                self.curs_line)) - 1
+        self.curs_byte = math.max(0, math.min(self.curs_byte, len))
+    end
+
+    function self.clip_view()
+        self.start_line = math.max(0, math.min(self.start_line,
+                buf.get_line_count() - 1))
+    end
+
     function self.handle_scroll(action)
         local scroll = get_scroll_amount(action, self)
-        local start_line = self.start_line
-        start_line = start_line + scroll
-        start_line = math.min(start_line, buf.tree.root.nl_count - 1)
-        start_line = math.max(start_line, 0)
+        local old_start_line = self.start_line
+        self.start_line = self.start_line + scroll
+        self.clip_view()
         -- Scroll screen contents with ncurses. This isn't really
         -- necessary, since we're going to update the whole screen,
         -- but should speed things up a bit
-        nc.wscrl(self.win, start_line - self.start_line)
-        self.start_line = start_line
+        nc.wscrl(self.win, self.start_line - old_start_line)
+        -- XXX update cursor
     end
 
     return self
