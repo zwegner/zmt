@@ -36,13 +36,18 @@ local nc = zmt
 -- Editor definitions
 
 -- Mode enum
-local NORMAL_MODE, INSERT_MODE, check = enum(5)
+local NORMAL_MODE, INSERT_MODE, VISUAL_MODE, check = enum(5)
 assert(check ~= nil)
+local MODE_STR = {
+    [NORMAL_MODE] = '',
+    [INSERT_MODE] = '-- INSERT --',
+    [VISUAL_MODE] = '-- VISUAL --',
+}
 
 -- Action enum
 local
     -- Generic/mode switching commands
-    ENTER_NORMAL, ENTER_INSERT, QUIT,
+    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL, EXIT_VISUAL, QUIT,
     -- Insert mode
     INSERT_CHAR,
     -- Cursor
@@ -58,7 +63,8 @@ local
 assert(check ~= nil)
 
 -- Render event enum
-local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_CURSOR, EV_EOF, check = enum(50)
+local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_CURSOR, EV_EOF,
+        EV_VISUAL_BEGIN, EV_VISUAL_END, check = enum(50)
 assert(check ~= nil)
 
 -- Color codes for syntax highlighting. Each value is a (fg, bg) pair
@@ -74,6 +80,7 @@ local HL_TYPE = {
     ['type.user']           = {41,   0},
     ['error']               = {15,   9},
 
+    ['visual']              = {15,   0, 'inv'},
     ['line_nb']             = {11, 238},
     ['status']              = {15,  21, 'bold'},
     ['status-unfocused']    = {0,   15},
@@ -319,6 +326,8 @@ local function init_color()
         attr = bit.lshift(idx, 8)
         if ext == 'bold' then
             attr = attr + bit.lshift(1, 8+13)
+        elseif ext == 'inv' then
+            attr = attr + bit.lshift(1, 8+10)
         end
         HL_TYPE[k] = idx
         HL_ATTR_IDS[idx] = attr
@@ -340,6 +349,7 @@ local function EventContext(window, query, width)
     -- Dynamic events: line wrap and cursor
     local next_wrap_offset
     local cursor_offset = nil
+    local visual_start, visual_end
 
     -- Event buffer, for managing nested highlights
     local event_buf = {}
@@ -353,11 +363,27 @@ local function EventContext(window, query, width)
         next_wrap_offset = offset + width
         -- If this is the line with the cursor, set up an event
         cursor_offset = (line == window.curs_line and offset + window.curs_byte)
+        -- Same, but for visual mode
+        if window.visual_start_line then
+            visual_start = (line == window.visual_start_line and
+                    offset + window.visual_start_byte)
+            visual_end = (line == window.curs_line and offset + window.curs_byte)
+            if window.visual_start_line > window.curs_line or
+                (window.visual_start_line == window.curs_line and
+                window.visual_start_byte > window.curs_byte) then
+                visual_start, visual_end = visual_end, visual_start
+            end
+        else
+            visual_start, visual_end = nil, nil
+        end
 
         -- Start the tree-sitter query over once we get the first byte offset
         if first then
             first = false
             query.reset(offset)
+            if window.visual_start_line and window.visual_start_line < line then
+                visual_start = offset
+            end
         end
     end
 
@@ -396,20 +422,29 @@ local function EventContext(window, query, width)
     -- an event, since due to dynamic events the next event might change
     -- as we move forward through the buffer
     function self.current_event()
-        if cursor_offset and cursor_offset <= next_wrap_offset and
-                cursor_offset <= next_hl_event[1] then
-            return {cursor_offset, EV_CURSOR, nil}
-        elseif next_wrap_offset <= next_hl_event[1] then
-            return {next_wrap_offset, EV_WRAP, nil}
-        else
-            return next_hl_event
+        -- Build a table of candidate events, and find the nearest one
+        local events = {
+            {next_wrap_offset, EV_WRAP, nil},
+            {visual_start, EV_VISUAL_BEGIN, 'visual'},
+            {visual_end, EV_VISUAL_END, 'visual'},
+            {cursor_offset, EV_CURSOR, nil},
+            {next_wrap_offset, EV_WRAP, nil},
+        }
+        local event = next_hl_event
+        for _, e in ipairs(events) do
+            if e[1] and e[1] < event[1] then event = e end
         end
+        return event
     end
 
     -- Advance the event queue
     function self.next_event(event_type)
         if event_type == EV_CURSOR then
             cursor_offset = nil
+        elseif event_type == EV_VISUAL_BEGIN then
+            visual_start = nil
+        elseif event_type == EV_VISUAL_END then
+            visual_end = nil
         elseif event_type == EV_WRAP then
             next_wrap_offset = next_wrap_offset + width
         else
@@ -440,7 +475,7 @@ end
 
 local function draw_mode_line(window, mode)
     local attr = HL_TYPE['mode_line']
-    local mode_line = (mode == INSERT_MODE and '-- INSERT --' or '')
+    local mode_line = MODE_STR[mode]
     window.write_at(window.rows - 1, 0, attr, mode_line, #mode_line)
     window.end_row()
     window.refresh()
@@ -458,6 +493,7 @@ local function draw_lines(window, is_focused)
     local hl_stack = {HL_TYPE['default']}
     -- The current highlight value
     local cur_hl = HL_TYPE['default']
+    local visual_hl
 
     local last_line = -1
     local row = 0
@@ -488,6 +524,10 @@ local function draw_lines(window, is_focused)
             assert(#hl_stack > 1)
             hl_stack[#hl_stack] = nil
             cur_hl = hl_stack[#hl_stack]
+        elseif event_type == EV_VISUAL_BEGIN then
+            visual_hl = HL_TYPE['visual']
+        elseif event_type == EV_VISUAL_END then
+            visual_hl = nil
         -- Line wrap. HACK: make sure to not wrap if this is the last
         -- character of a line
         elseif event_type == EV_WRAP then
@@ -535,7 +575,7 @@ local function draw_lines(window, is_focused)
             if offset < event_offset then
                 local bound = math.min(event_offset - offset, #piece)
                 local part = piece:sub(1, bound)
-                window.write_at(row, col, cur_hl, part, #part)
+                window.write_at(row, col, visual_hl or cur_hl, part, #part)
                 piece = piece:sub(bound + 1)
                 offset = offset + #part
                 col = col + #part
@@ -616,6 +656,8 @@ local INPUT_TABLES = {
         ['$']               = CURSOR_END,
 
         ['i']               = ENTER_INSERT,
+        ['v']               = ENTER_VISUAL,
+
         [CTRL('E')]         = SCROLL_DOWN,
         [CTRL('Y')]         = SCROLL_UP,
         [CTRL('D')]         = SCROLL_HALFPAGE_DOWN,
@@ -625,8 +667,17 @@ local INPUT_TABLES = {
         [CTRL('P')]         = WINDOW_PREV,
     },
     [INSERT_MODE] = {
-        ['\027']            = ENTER_NORMAL,
+        ['\027']            = EXIT_INSERT,
         ['.']               = handle_insert_char,
+    },
+    [VISUAL_MODE] = {
+        ['\027']            = EXIT_VISUAL,
+        ['h']               = CURSOR_LEFT,
+        ['j']               = CURSOR_DOWN,
+        ['k']               = CURSOR_UP,
+        ['l']               = CURSOR_RIGHT,
+        ['0']               = CURSOR_HOME,
+        ['$']               = CURSOR_END,
     }
 }
 
@@ -806,6 +857,7 @@ local function Window(buf, rows, cols, y, x)
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line = 0
+    self.visual_start_line, self.visual_start_byte = nil
 
     function self.clear()
         self.curs_row, self.curs_col = nil, nil
@@ -890,6 +942,8 @@ local function NullWindow(buf, rows, cols, y, x)
             io.stdout:write(('\027[38;5;%dm\027[48;5;%dm'):format(fg, bg))
             if ext == 'bold' then
                 io.stdout:write('\027[1m')
+            elseif ext == 'inv' then
+                io.stdout:write('\027[7m')
             end
             self.attr = attr
         end
@@ -1036,6 +1090,17 @@ local function run_tui(paths, debug, dumb_tui)
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?
             window.handle_cursor(data == 10 and CURSOR_NL or CURSOR_RIGHT)
+
+        ------------------------------------------------------------------------
+        -- Visual Mode ---------------------------------------------------------
+        ------------------------------------------------------------------------
+        elseif action == ENTER_VISUAL then
+            current_mode = VISUAL_MODE
+            window.visual_start_line, window.visual_start_byte = window.get_cursor()
+        elseif action == EXIT_VISUAL then
+            current_mode = NORMAL_MODE
+            window.visual_start_line, window.visual_start_byte = nil
+
         else
             --error('unknown action', action)
         end
