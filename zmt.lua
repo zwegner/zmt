@@ -150,7 +150,8 @@ function module.iter_lines(tree, line_start, line_end)
     end)
 end
 
-local function print_node(tree, node, depth)
+-- Recursive coroutine that formats tree printing
+local function co_tree_print(tree, node, depth)
     local prefix = ('%s %s(%s) b=%s n=%s'):format(
             ('  '):rep(depth), node, node.flags, node.byte_count, node.nl_count)
 
@@ -160,23 +161,31 @@ local function print_node(tree, node, depth)
         end
         local l = node.leaf
         local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
-        log(prefix, str(data))
+        coroutine.yield(fmt(prefix, str(data)))
     elseif bit.band(node.flags, NODE_HOLE) ~= 0 then
-        log(prefix, 'HOLE')
-        print_node(tree, tree.filler_node[0], depth+1)
+        coroutine.yield(fmt(prefix, 'HOLE'))
+        co_tree_print(tree, tree.filler_node[0], depth+1)
     else
-        log(prefix)
+        coroutine.yield(prefix)
         for i = 0, MAX_CHILDREN-1 do
             if node.inner.children[i] ~= nil then
-                print_node(tree, node.inner.children[i], depth+1)
+                co_tree_print(tree, node.inner.children[i], depth+1)
             end
         end
     end
 end
 
+local function iter_tree_print(tree)
+    return coroutine.wrap(function ()
+        co_tree_print(tree, tree.root, 0)
+    end)
+end
+
 function module.print_tree(tree)
     log('\n\nTREE')
-    print_node(tree, tree.root, 0)
+    for line in iter_tree_print(tree) do
+        log(line)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -494,8 +503,7 @@ local function draw_lines(window, is_focused)
     end
 
     -- Iterate through all lines in the file
-    for line, offset, is_end, piece in module.iter_lines(buf.tree,
-            window.start_line, buf.get_line_count() - 1) do
+    for line, offset, is_end, piece in buf.iter_lines_from(window.start_line) do
         -- Line number display
         if line ~= last_line then
             event_ctx.mark_line_start(line, offset)
@@ -721,7 +729,40 @@ local function Buffer(path)
     self.tree = zmt.dumb_read_data(self.chunk)
 
     function self.get_line_count()
-        return zmt.get_tree_total_size(self.tree).line
+        return tonumber(zmt.get_tree_total_size(self.tree).line) + 1
+    end
+
+    function self.iter_lines_from(start_line)
+        return module.iter_lines(self.tree,
+            start_line, self.get_line_count())
+    end
+
+    return self
+end
+
+local function TreeDebugBuffer(buf)
+    local self = {}
+    self.query = TSNullQuery()
+    self.path = '[tree-debug]'
+    self.lines = 0
+
+    function self.iter_lines_from(start_line)
+        return coroutine.wrap(function ()
+            local line_nb = 0
+            self.lines = 1
+            for line in iter_tree_print(buf.tree) do
+                self.lines = line_nb + 1
+                if line_nb >= start_line then
+                    coroutine.yield(line_nb, 0, true, line)
+                end
+                line_nb = line_nb + 1
+            end
+        end)
+    end
+
+    function self.get_line_count()
+        -- HACK
+        return self.lines
     end
     return self
 end
@@ -865,7 +906,7 @@ local function NullWindow(buf, rows, cols, y, x)
     return self
 end
 
-local function run_tui(paths, dumb_tui)
+local function run_tui(paths, debug, dumb_tui)
     local Window = Window
     local rows, cols
     if dumb_tui then
@@ -897,6 +938,11 @@ local function run_tui(paths, dumb_tui)
         local buf = Buffer(path)
         ts_ctx.parse_buf(buf)
         buffers[#buffers + 1] = buf
+
+        if debug then
+            local td_buf = TreeDebugBuffer(buf)
+            buffers[#buffers + 1] = td_buf 
+        end
     end
 
     -- Split window up to show all buffers
@@ -926,22 +972,17 @@ local function run_tui(paths, dumb_tui)
     local current_mode = NORMAL_MODE
 
     -- Draw all windows
+    -- XXX actually track dirty status
     function draw_all()
         for i = 1, #windows do
             draw_lines(windows[i], i == cur_win)
         end
     end
 
-    draw_all()
-
     while true do
         -- Draw screen
         draw_mode_line(mode_window, current_mode)
-        if dumb_tui then
-            draw_all()
-        else
-            draw_lines(window, true)
-        end
+        draw_all()
         -- Also, refresh the current window again, to make sure the cursor is
         -- in the right place
         window.refresh()
@@ -955,23 +996,17 @@ local function run_tui(paths, dumb_tui)
             local offset = (action == WINDOW_NEXT and 1 or -1)
             cur_win = (cur_win + offset - 1) % #windows + 1
             window = windows[cur_win]
-            -- Draw all windows to refresh out-of-focus status lines
-            draw_all()
         elseif action == MOUSE_DOWN then
             local i, target = find_window_target(unpack(data))
             if i ~= nil then
                 cur_win, window = i, target
             end
-            -- HACK redraw every window
-            draw_all()
         elseif action_is_scroll(action) then
             if data then
                 local _, target = find_window_target(unpack(data))
                 if target then
                     target.handle_scroll(action)
                 end
-                -- HACK redraw every window
-                draw_all()
             else
                 window.handle_scroll(action)
             end
@@ -1008,12 +1043,19 @@ local function run_tui(paths, dumb_tui)
 end
 
 function module.main(args)
+    -- Argument "parsing"
+    local debug_tree = false
+    if arg[1] == '--debug' then
+        table.remove(arg, 1)
+        debug_tree = true
+    end
+
     if #arg < 1 then
         error('no files')
     end
 
     -- Run the TUI, catching and printing any errors
-    local res = {xpcall(run_tui, debug.traceback, args)}
+    local res = {xpcall(run_tui, debug.traceback, args, debug_tree)}
     nc.endwin()
     print(unpack(res))
 end
