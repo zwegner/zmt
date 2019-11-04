@@ -74,7 +74,7 @@ end
 
 -- Tests
 local TESTS = {
-    test_stdlib = function ()
+    {'stdlib', function ()
         test_name('assert')
         assert_eq(0, 0)
         assert_neq(0, 1)
@@ -87,9 +87,9 @@ local TESTS = {
         assert_neq({{1}, {1}}, {{1}, {2}})
         assert_eq({{1}, {1, 2}}, {{1}, {1, 2}})
         assert_neq({{1}, {1, 2}}, {{1}, {1, 2, 3}})
-    end,
+    end},
 
-    test_tree_1 = function ()
+    {'tree 1', function ()
         test_name('basic tree 1')
         local tree = zmt.zmt.create_tree(true)
         check_tree(tree, {}, {''})
@@ -122,9 +122,9 @@ local TESTS = {
             tree = zmt.zmt.split_at_offset(tree, 0, i)
             check_tree(tree, {'a', 'c', '\nb'}, {'ac\n', 'b'})
         end
-    end,
+    end},
 
-    test_tree_2 = function ()
+    {'tree 2', function ()
         test_name('tree 2')
         local tree = zmt.zmt.create_tree(true)
 
@@ -149,14 +149,14 @@ local TESTS = {
             lines[i] = '01234xxx56789\n'
         end
         check_tree(tree, pieces, lines)
-    end,
+    end},
 }
 
 local test_filter = #arg > 0 and arg[1]
 
-for name, fn in pairs(TESTS) do
+for i, name, fn in iter_unpack(TESTS) do
     if not test_filter or name:find(test_filter) then
-        io.stdout:write(right_pad('Running ' .. name .. '...', 50))
+        io.stdout:write(right_pad('Running test ' .. name .. '...', 50))
         TEST_NAME = ''
         local ok, res = xpcall(fn, debug.traceback)
         if ok then
