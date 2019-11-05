@@ -30,6 +30,9 @@ static const meta_node_t HOLE_NODE_SINGLETON = {
 
 #define MAX(a, b)       ((a) >= (b) ? (a) : (b))
 
+static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
+        uint64_t line_offset, uint64_t byte_offset);
+
 ////////////////////////////////////////////////////////////////////////////////
 // Chunks / Files //////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -398,16 +401,6 @@ next_iter:
     return NULL;
 }
 
-static meta_node_t *make_slice_node(meta_iter_t *iter, meta_node_t *node,
-        uint64_t offset) {
-    *iter->slice_node = *node;
-    iter->slice_node->leaf.start += offset;
-    // Re-initialize metadata. Maybe we should have an option to not
-    // recalculate this if it's not needed...?
-    set_leaf_meta_data(iter->slice_node);
-    return iter->slice_node;
-}
-
 // Initialize an iterator object, and return the first node, starting at
 // either <byte_offset> bytes or <line_offset> lines into the file.
 // Only one of byte_offset/line_offset can be non-zero.
@@ -507,6 +500,11 @@ meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
     iter->end_offset.line += hole_delta.line;
     iter->end_offset.byte += hole_delta.byte;
 
+    return iter_slice_at(iter, node, line_offset, byte_offset);
+}
+
+static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
+        uint64_t line_offset, uint64_t byte_offset) {
     if (!node)
         return NULL;
 
@@ -547,7 +545,16 @@ meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
     // The desired byte offset is somewhere in the middle. Rather than
     // try to make a weird API to pass this information to the caller,
     // create a slice node with just the slice we want
-    meta_node_t *slice = make_slice_node(iter, node, offset);
+    meta_node_t *slice_right = iter->slice_node_right;
+    *slice_right = *node;
+    slice_right->leaf.start += offset;
+    set_leaf_meta_data(slice_right);
+
+    meta_node_t *slice_left = iter->slice_node_left;
+    *slice_left = *node;
+    slice_left->leaf.end = slice_right->leaf.start;
+    slice_left->byte_count -= slice_right->byte_count;
+    slice_left->nl_count -= slice_right->nl_count;
 
     // Update the offset. The byte is simple, but for newlines we use
     // a delta between the old and new nodes so we don't have to scan
@@ -555,9 +562,9 @@ meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
     iter->start_offset.byte += offset;
 
     if (line_offset == 0)
-        iter->start_offset.line += node->nl_count - slice->nl_count;
+        iter->start_offset.line += node->nl_count - slice_right->nl_count;
 
-    return slice;
+    return slice_right;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -641,36 +648,25 @@ meta_tree_t *split_at_offset(meta_tree_t *tree, uint64_t line_offset,
     meta_iter_t iter[1];
     meta_node_t *node = iter_start_at(iter, tree, line_offset, byte_offset);
 
-    assert(!node || node == iter->slice_node ||
+    assert(!node || node == iter->slice_node_right ||
             node == iter->frame[iter->depth].node);
 
     // There are two main cases to handle here, based on whether the jump
     // offset started perfectly on a node or not. Right now we can always
     // determine this based on whether we got the slice node from the iterator.
     meta_node_t *parent = create_node();
-    if (node == iter->slice_node) {
-        // Get the base node that the current node is a slice of
-        // This is a tiny hack, in that it looks into the stack frame that
-        // just got "popped", to see the node that is current
-        meta_iter_frame_t *frame = &iter->frame[iter->depth];
-        meta_node_t *base_node = frame->node;
+    if (node == iter->slice_node_right) {
+        meta_node_t *left = iter->slice_node_left;
 
         // Sanity check that this is the right base node
         assert(node->flags & NODE_LEAF);
-        assert(base_node->flags & NODE_LEAF);
-        assert(node->leaf.chunk_data == base_node->leaf.chunk_data);
-        assert(node->leaf.start > base_node->leaf.start);
-        assert(node->leaf.end == base_node->leaf.end);
+        assert(left->flags & NODE_LEAF);
+        assert(node->leaf.chunk_data == left->leaf.chunk_data);
+        assert(node->leaf.start == left->leaf.end);
 
-        // Create two nodes: one with the bytes to the right of the current
-        // offset, which we can copy directly from the current node, and one
-        // with the bytes to the left, which we create by comparing the
-        // current node with its base
+        // Duplicate the left and right slice nodes
         meta_node_t *child_r = duplicate_node(node);
-        meta_node_t *child_l = duplicate_node(base_node);
-        child_l->leaf.end = child_r->leaf.start;
-        child_l->byte_count -= child_r->byte_count;
-        child_l->nl_count -= child_r->nl_count;
+        meta_node_t *child_l = duplicate_node(left);
 
         // XXX This logic is MAX_CHILDREN==2 specific
         meta_node_t *sub_parent = create_node();

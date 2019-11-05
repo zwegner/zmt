@@ -207,7 +207,8 @@ typedef struct {
     // The offset we're currently seeking towards
     offset_t desired_offset;
 
-    meta_node_t slice_node[1];
+    meta_node_t slice_node_left[1];
+    meta_node_t slice_node_right[1];
 } meta_iter_t;
 
 ////////////////////////////////////////////////////////////////////////////////
