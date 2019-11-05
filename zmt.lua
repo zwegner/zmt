@@ -124,13 +124,6 @@ end
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
 
--- HACK
-local NODE_INNER  = bit.lshift(1, zmt.node_inner_bit)
-local NODE_LEAF   = bit.lshift(1, zmt.node_leaf_bit)
-local NODE_HOLE   = bit.lshift(1, zmt.node_hole_bit)
-local NODE_FILLER = bit.lshift(1, zmt.node_filler_bit)
-local MAX_CHILDREN = 2
-
 function module.iter_start(tree, line_offset, byte_offset)
     byte_offset = byte_offset or 0
     line_offset = line_offset or 0
@@ -192,19 +185,19 @@ local function co_tree_print(tree, node, depth)
     local prefix = ('%s %s(%s) b=%s n=%s'):format(
             ('  '):rep(depth), node, node.flags, node.byte_count, node.nl_count)
 
-    if bit.band(node.flags, NODE_LEAF + NODE_FILLER) ~= 0 then
-        if bit.band(node.flags, NODE_FILLER) ~= 0 then
+    if bit.band(node.flags, zmt.NODE_LEAF + zmt.NODE_FILLER) ~= 0 then
+        if bit.band(node.flags, zmt.NODE_FILLER) ~= 0 then
             prefix = prefix .. ' FILLER'
         end
         local l = node.leaf
         local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
         coroutine.yield(fmt(prefix, str(data)))
-    elseif bit.band(node.flags, NODE_HOLE) ~= 0 then
+    elseif bit.band(node.flags, zmt.NODE_HOLE) ~= 0 then
         coroutine.yield(fmt(prefix, 'HOLE'))
         co_tree_print(tree, tree.filler_node[0], depth+1)
     else
         coroutine.yield(prefix)
-        for i = 0, MAX_CHILDREN-1 do
+        for i = 0, zmt.MAX_CHILDREN-1 do
             if node.inner.children[i] ~= nil then
                 co_tree_print(tree, node.inner.children[i], depth+1)
             end

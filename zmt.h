@@ -102,17 +102,18 @@ typedef struct {
 // Right now, with no metadata in leaf nodes beyond byte/newline count,
 // we can use MAX_CHILDREN==2 and fit a node into a nice 32 bytes.
 
-#define MAX_CHILDREN            (2)
+enum { MAX_CHILDREN = 2 };
 
 // Flags
 enum { node_inner_bit, node_leaf_bit, node_hole_bit, node_filler_bit,
     node_has_hole_bit = 7};
-#define NODE_INNER              (1 << node_inner_bit)
-#define NODE_LEAF               (1 << node_leaf_bit)
-#define NODE_HOLE               (1 << node_hole_bit)
-#define NODE_FILLER             (1 << node_filler_bit)
-
-#define NODE_HAS_HOLE           (1 << node_has_hole_bit)
+enum {
+    NODE_INNER    = (1 << node_inner_bit),
+    NODE_LEAF     = (1 << node_leaf_bit),
+    NODE_HOLE     = (1 << node_hole_bit),
+    NODE_FILLER   = (1 << node_filler_bit),
+    NODE_HAS_HOLE = (1 << node_has_hole_bit),
+};
 
 typedef struct meta_node_t {
     uint32_t ref_count;
