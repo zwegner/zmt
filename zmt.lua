@@ -781,7 +781,7 @@ local function Buffer(path)
     local self = {}
     self.path = path
     self.chunk = zmt.map_file(path)
-    self.tree = zmt.dumb_read_data(self.chunk)
+    self.tree = zmt.dumb_read_data(self.chunk, 0)
 
     function self.get_line_count()
         return tonumber(zmt.get_tree_total_size(self.tree).line) + 1

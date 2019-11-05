@@ -79,6 +79,14 @@ static const uint8_t *write_data_bytes(const uint8_t *data, uint64_t len,
     return current_chunk->data;
 }
 
+// Dumb chunk management stuff: just leak the old chunk
+chunk_t *write_new_chunk(const uint8_t *data, uint64_t len) {
+    uint32_t dummy;
+    current_chunk = create_chunk(NULL, 0x10000);
+    write_data_bytes(data, len, &dummy, &dummy);
+    return current_chunk;
+}
+
 chunk_t *map_file(const char *path) {
     FILE *f = fopen(path, "r");
     fseek(f, 0, SEEK_END);
@@ -211,8 +219,9 @@ meta_tree_t *read_data(chunk_t *chunk) {
 }
 
 // Read data, but create a big dumb tree with lots of nodes for it
-meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
-    if (end - start < 32) {
+meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t size, uint32_t start,
+        uint32_t end) {
+    if (end - start <= size) {
         meta_node_t *node = create_leaf();
         node->leaf.start = start;
         node->leaf.end = end;
@@ -225,7 +234,7 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
         uint32_t s = start;
         for (int i = 0; i < MAX_CHILDREN; i++) {
             uint32_t mid = start + (end - start) * (i+1) / MAX_CHILDREN;
-            parent->inner.children[i] = create_dumb_node(chunk, s, mid);
+            parent->inner.children[i] = create_dumb_node(chunk, size, s, mid);
             s = mid;
         }
         set_inner_meta_data(parent);
@@ -233,13 +242,16 @@ meta_node_t *create_dumb_node(chunk_t *chunk, uint32_t start, uint32_t end) {
     }
 }
 
-meta_tree_t *dumb_read_data(chunk_t *chunk) {
+meta_tree_t *dumb_read_data(chunk_t *chunk, uint32_t size) {
     // Create tree
     meta_tree_t *tree = create_tree(false);
     tree->chunks[0] = chunk;
     tree->chunk_count = 1;
 
-    meta_node_t *node = create_dumb_node(chunk, 0, chunk->len);
+    // Set a default size if none given
+    size = size ? size : 256;
+
+    meta_node_t *node = create_dumb_node(chunk, size, 0, chunk->used);
 
     tree->root = node;
     return tree;
@@ -746,6 +758,59 @@ meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
         uint64_t byte_offset, const uint8_t *data, uint64_t len) {
     tree = split_at_offset(tree, line_offset, byte_offset);
     return append_bytes_to_filler(tree, data, len);
+}
+
+meta_tree_t *delete_byte_range(meta_tree_t *tree, uint64_t start, uint64_t end) {
+    assert(start < end);
+
+    meta_iter_t iter[1];
+    meta_node_t *node = iter_start_at(iter, tree, 0, start);
+
+    assert(node == iter->slice_node_right ||
+            node == iter->frame[iter->depth].node);
+
+    meta_node_t *left = NULL;
+
+    // Delete leftmost part of this byte range, if we're deleting only part of
+    // a node
+    if (node == iter->slice_node_right) {
+        left = iter->slice_node_left;
+
+        // Sanity check that this is the right base node
+        assert(node->flags & (NODE_LEAF | NODE_FILLER));
+        assert(left->flags & (NODE_LEAF | NODE_FILLER));
+        assert(node->leaf.chunk_data == left->leaf.chunk_data);
+        assert(node->leaf.start == left->leaf.end);
+
+        left = duplicate_node(left);
+    }
+
+    // Delete the middle part
+    while (node && iter->end_offset.byte <= end) {
+        tree = replace_current_node(iter, NULL);
+        node = iter_next(iter);
+    }
+
+    // Delete the right part
+    meta_node_t *right = NULL;
+    if (node) {
+        right = iter_slice_at(iter, node, 0, end);
+        right = duplicate_node(right);
+    }
+
+    meta_node_t *parent = NULL;
+    if (left && right) {
+        // XXX This logic is MAX_CHILDREN==2 specific
+        parent = create_node();
+        parent->inner.children[0] = left;
+        parent->inner.children[1] = right;
+        set_inner_meta_data(parent);
+    } else
+        parent = left ? left : right;
+
+    tree = replace_current_node(iter, parent);
+
+    return tree;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
