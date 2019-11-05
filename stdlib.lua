@@ -75,6 +75,16 @@ function concat(...)
     return result
 end
 
+function merge(...)
+    local result = {}
+    for _, table in ipairs{...} do
+        for key, value in pairs(table) do
+            result[key] = value
+        end
+    end
+    return result
+end
+
 function rep(v, n)
     local result = {}
     for _ = 1, n do

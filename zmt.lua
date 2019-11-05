@@ -36,32 +36,38 @@ local nc = zmt
 -- Editor definitions
 
 -- Mode enum
-local NORMAL_MODE, INSERT_MODE, VISUAL_MODE, check = enum(5)
+local NORMAL_MODE, INSERT_MODE, VISUAL_MODE, OPERATOR_MODE, check = enum(5)
 assert(check ~= nil)
 local MODE_STR = {
     [NORMAL_MODE] = '',
     [INSERT_MODE] = '-- INSERT --',
     [VISUAL_MODE] = '-- VISUAL --',
+    [OPERATOR_MODE] = '',
 }
 
 -- Action enum
 local
     -- Generic/mode switching commands
     ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL, EXIT_VISUAL, QUIT,
+    -- Operators
+    _OP_MIN, OP_CHANGE, OP_DELETE, _OP_MAX,
+    -- Motions
+    _MOTION_MIN, MOTION_UP, MOTION_DOWN, MOTION_LEFT, MOTION_RIGHT,
+    MOTION_HOME, MOTION_END, MOTION_FIRST, MOTION_LAST, MOTION_NL, _MOTION_MAX,
     -- Insert mode
     INSERT_CHAR,
-    -- Normal mode
-    DELETE,
-    -- Cursor
-    _CURSOR_MIN, CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
-    CURSOR_HOME, CURSOR_END, CURSOR_FIRST, CURSOR_LAST, CURSOR_NL, _CURSOR_MAX,
     -- Scrolling
-    SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP, SCROLL_HALFPAGE_DOWN,
+    _SCROLL_MIN, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
+    SCROLL_HALFPAGE_DOWN, _SCROLL_MAX,
     -- Mouse events
     MOUSE_DOWN,
     -- Window movement
-    WINDOW_NEXT, WINDOW_PREV,
+    _WINDOW_SWITCH_MIN, WINDOW_NEXT, WINDOW_PREV, _WINDOW_SWITCH_MAX,
     check = enum(100)
+assert(check ~= nil)
+
+-- Motion properties
+local M_LINEWISE, M_CHARWISE, M_INC, M_EXC, check = enum(50)
 assert(check ~= nil)
 
 -- Render event enum
@@ -107,6 +113,9 @@ local function Pos(line, byte)
     self.line, self.byte = line, byte
     function self.copy()
         return Pos(self.line, self.byte)
+    end
+    function self.delta(d_l, d_b)
+        return Pos(self.line + d_l, self.byte + d_b)
     end
     return self
 end
@@ -649,34 +658,44 @@ local function handle_insert_char(buf)
     end
 end
 
--- HACKy helper functions that rely on action enum ordering
+-- Input helper functions
 
-local function action_is_scroll(action)
-    return action >= SCROLL_UP and action <= SCROLL_HALFPAGE_DOWN
+local function action_is_operator(action)
+    return action >= _OP_MIN and action <= _OP_MAX
 end
-local function action_is_cursor(action)
-    return action >= _CURSOR_MIN and action <= _CURSOR_MAX
+local function action_is_scroll(action)
+    return action >= _SCROLL_MIN and action <= _SCROLL_MAX
+end
+local function action_is_motion(action)
+    return action >= _MOTION_MIN and action <= _MOTION_MAX
 end
 local function action_is_window_switch(action)
-    return action >= WINDOW_NEXT and action <= WINDOW_PREV
+    return action >= _WINDOW_SWITCH_MIN and action <= _WINDOW_SWITCH_MAX
 end
 
 local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
 
 -- Input sequences, per mode
 
+local MOTION_TABLE = {
+    ['h']               = MOTION_LEFT,
+    ['j']               = MOTION_DOWN,
+    ['k']               = MOTION_UP,
+    ['l']               = MOTION_RIGHT,
+    ['0']               = MOTION_HOME,
+    ['$']               = MOTION_END,
+    ['gg']              = MOTION_FIRST,
+    ['G']               = MOTION_LAST,
+}
+
+local OPERATOR_TABLE = {
+    ['c']               = OP_CHANGE,
+    ['d']               = OP_DELETE,
+}
+
 local INPUT_TABLES = {
     [NORMAL_MODE] = {
         ['QQ']              = QUIT,
-
-        ['h']               = CURSOR_LEFT,
-        ['j']               = CURSOR_DOWN,
-        ['k']               = CURSOR_UP,
-        ['l']               = CURSOR_RIGHT,
-        ['0']               = CURSOR_HOME,
-        ['$']               = CURSOR_END,
-        ['gg']              = CURSOR_FIRST,
-        ['G']               = CURSOR_LAST,
 
         ['i']               = ENTER_INSERT,
         ['v']               = ENTER_VISUAL,
@@ -695,16 +714,10 @@ local INPUT_TABLES = {
     },
     [VISUAL_MODE] = {
         ['\027']            = EXIT_VISUAL,
-        ['d']               = DELETE,
-        ['h']               = CURSOR_LEFT,
-        ['j']               = CURSOR_DOWN,
-        ['k']               = CURSOR_UP,
-        ['l']               = CURSOR_RIGHT,
-        ['0']               = CURSOR_HOME,
-        ['$']               = CURSOR_END,
-        ['gg']              = CURSOR_FIRST,
-        ['G']               = CURSOR_LAST,
-    }
+    },
+    [OPERATOR_MODE] = {
+        ['.']               = EXIT_OPERATOR,
+    },
 }
 
 -- Make a big tree for matching the inputs in input_table. The leaves are
@@ -740,14 +753,39 @@ for mode, table in pairs(INPUT_TABLES) do
     INPUT_TREES[mode] = parse_input_table(table)
 end
 
+-- Post-processing: add operators and motions
+local op_tree = parse_input_table(OPERATOR_TABLE)
+local motion_tree = parse_input_table(MOTION_TABLE)
+for _, mode in ipairs{NORMAL_MODE, VISUAL_MODE, OPERATOR_MODE} do
+    INPUT_TREES[mode] = merge(INPUT_TREES[mode], op_tree)
+    INPUT_TREES[mode] = merge(INPUT_TREES[mode], motion_tree)
+end
+
 -- Read input until we parse a command
-local function get_next_input(input_tree)
+local function get_next_input(mode)
+    local input_tree = INPUT_TREES[mode]
     -- Store all current input sequence matches
     local matches = {}
+    -- HACK
+    local enable_count = (mode == NORMAL_MODE or mode == VISUAL_MODE or
+            mode == OPERATOR_MODE)
+    local count = nil
 
     while true do
         local c = C.getchar()
-        local buffer, action, data = nil, nil, nil
+        local input, action, data = nil, nil, nil
+
+        -- Parse count
+        if enable_count and count == nil and c >= string.byte('1') and
+                c <= string.byte('9') then
+            count = c - string.byte('0')
+            c = C.getchar()
+            while c >= string.byte('0') and c <= string.byte('9') do
+                count = count * 10 + (c - string.byte('0'))
+                c = C.getchar()
+            end
+            matches = {}
+        end
 
         -- Look through in-progress matches and advance them if this character
         -- is in the given match sub-table
@@ -756,14 +794,13 @@ local function get_next_input(input_tree)
             local lookup = match_table[c] or match_table[0]
             if lookup ~= nil then
                 prefix[#prefix + 1] = c
-
                 if type(lookup) == 'table' then
                     -- This is a sub-table: add the character to the buffer
                     -- and match on the sub-table
                     matches[idx] = {prefix, lookup}
                 elseif lookup ~= nil then
                     -- Leaf node: set the action and break
-                    buffer, action = prefix, lookup
+                    input, action = prefix, lookup
                     matches[idx] = nil
                     break
                 end
@@ -781,16 +818,19 @@ local function get_next_input(input_tree)
             matches[#matches + 1] = {{c}, lookup}
         elseif lookup ~= nil then
             -- Immediate match
-            buffer, action = {c}, lookup
+            input, action = {c}, lookup
         end
 
         -- Check for a successful input match
         if type(action) == 'function' then
-            action, data = action(buffer)
+            action, data = action(input)
         end
 
         if action ~= nil then
-            return action, buffer, data
+            return count, action, input, data
+        -- Clear out count if no matches are in progress
+        elseif #matches == 0 then
+            count = nil
         end
     end
 end
@@ -807,6 +847,11 @@ local function Buffer(path)
 
     function self.get_line_count()
         return tonumber(zmt.get_tree_total_size(self.tree).line) + 1
+    end
+
+    function self.get_line_len(line)
+        -- XXX multibyte
+        return tonumber(zmt.get_tree_line_length(self.tree, line))
     end
 
     function self.iter_lines_from(start_line)
@@ -856,25 +901,30 @@ local function get_scroll_amount(action, window)
     end
 end
 
-local function get_cursor_movement(action)
-    if action == CURSOR_UP then
-        return -1, 0
-    elseif action == CURSOR_DOWN then
-        return 1, 0
-    elseif action == CURSOR_LEFT then
-        return 0, -1
-    elseif action == CURSOR_RIGHT then
-        return 0, 1
-    elseif action == CURSOR_HOME then
-        return 0, -1e100
-    elseif action == CURSOR_END then
-        return 0, 1e100
-    elseif action == CURSOR_FIRST then
-        return -1e100, 0
-    elseif action == CURSOR_LAST then
-        return 1e100, 0
-    elseif action == CURSOR_NL then
-        return 1, -1e100
+local function get_motion_props(buf, raw_count, action, start)
+    local count = raw_count or 1
+    if action == MOTION_UP then
+        return start.delta(-count, 0), M_LINEWISE, M_INC
+    elseif action == MOTION_DOWN then
+        return start.delta(count, 0), M_LINEWISE, M_INC
+    elseif action == MOTION_LEFT then
+        return start.delta(0, -count), M_CHARWISE, M_EXC
+    elseif action == MOTION_RIGHT then
+        return start.delta(0, count), M_CHARWISE, M_EXC
+    elseif action == MOTION_HOME then
+        return Pos(start.line, 0), M_CHARWISE, M_EXC
+    elseif action == MOTION_END then
+        local len = buf.get_line_len(start.line) - 1
+        -- Sorta hacky: use exclusive motion here instead of inclusive like vim,
+        -- since right now we're counting the final newline in get_line_len()
+        return Pos(start.line, len), M_CHARWISE, M_EXC
+    elseif action == MOTION_FIRST then
+        return Pos(raw_count and (raw_count - 1) or 0, 0), M_LINEWISE, M_INC
+    elseif action == MOTION_LAST then
+        local last = buf.get_line_count() - 1
+        return Pos(raw_count and (raw_count - 1) or last, 0), M_LINEWISE, M_INC
+    elseif action == MOTION_NL then
+        return Pos(start.line + 1, 0), M_LINEWISE, M_INC
     end
 end
 
@@ -903,11 +953,14 @@ local function Window(buf, rows, cols, y, x)
         nc.wrefresh(self.win)
     end
 
-    function self.handle_cursor(action)
-        local dy, dx = get_cursor_movement(action)
-        self.cursor.line = self.cursor.line + dy
-        self.cursor.byte = self.cursor.byte + dx
-        self.clip_cursor()
+    function self.get_motion_props(count, action)
+        local cursor, mtype, inc = get_motion_props(buf, count, action,
+                self.cursor)
+        return self.clip_cursor(cursor), mtype, inc
+    end
+
+    function self.handle_cursor(count, action)
+        self.cursor = self.get_motion_props(count, action)
 
         if self.cursor.line < self.start_line then
             self.start_line = self.cursor.line
@@ -930,13 +983,12 @@ local function Window(buf, rows, cols, y, x)
         nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
-    function self.clip_cursor()
-        self.cursor.line = math.max(0, math.min(self.cursor.line,
+    function self.clip_cursor(cursor)
+        cursor.line = math.max(0, math.min(cursor.line,
                 buf.get_line_count() - 1))
-        -- XXX multibyte
-        local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
-                self.cursor.line)) - 1
-        self.cursor.byte = math.max(0, math.min(self.cursor.byte, len))
+        local len = buf.get_line_len(cursor.line) - 1
+        cursor.byte = math.max(0, math.min(cursor.byte, len))
+        return cursor
     end
 
     function self.clip_view()
@@ -1067,6 +1119,50 @@ local function run_tui(paths, debug, dumb_tui)
     end
 
     local current_mode = NORMAL_MODE
+    -- Action and count for operator pending mode
+    local op_action, op_count = nil, nil
+
+    -- Handle an operator on a given range
+    local function operate(window, start, stop, action, mtype, inc)
+        if start > stop then
+            start, stop = stop, start
+        end
+
+        -- Handle linewise/charwise and inclusive/exclusive
+        if mtype == M_LINEWISE then
+            assert(inc == M_INC)
+            start.byte = 0
+            -- Sorta hacky: linewise change operator expects to get a new
+            -- line when starting the insert, so cut off before the last byte
+            if action == OP_CHANGE then
+                stop.byte = window.buf.get_line_len(stop.line) - 1
+            else
+                stop.line = stop.line + 1
+                stop.byte = 0
+            end
+        elseif inc == M_INC then
+            stop.byte = stop.byte + 1
+        end
+
+        local start_off = zmt.get_abs_byte_offset(window.buf.tree,
+                start.line, start.byte)
+        local stop_off = zmt.get_abs_byte_offset(window.buf.tree,
+                stop.line, stop.byte)
+
+        if start_off < stop_off then
+            window.buf.tree = zmt.delete_byte_range(window.buf.tree,
+                    start_off, stop_off)
+            -- HACK: just re-parse the whole buffer, and leak the old ast
+            ts_ctx.parse_buf(window.buf)
+        end
+        window.cursor = start
+        if action == OP_CHANGE then
+            window.buf.tree = zmt.split_at_offset(window.buf.tree,
+                    window.cursor.line, window.cursor.byte)
+            return INSERT_MODE
+        end
+        return NORMAL_MODE
+    end
 
     -- Draw all windows
     -- XXX actually track dirty status
@@ -1085,8 +1181,19 @@ local function run_tui(paths, debug, dumb_tui)
         window.refresh()
 
         -- Handle input
-        local action, buffer, data = get_next_input(INPUT_TREES[current_mode])
+        local count, action, input, data = get_next_input(current_mode)
 
+        -- Clear out any pending operator
+        if current_mode ~= OPERATOR_MODE then
+            op_action, op_count = nil, nil
+        elseif action_is_operator(action) and op_action ~= action then
+            op_action, op_count = nil, nil
+            current_mode = NORMAL_MODE
+        end
+
+        ------------------------------------------------------------------------
+        -- Universal commands --------------------------------------------------
+        ------------------------------------------------------------------------
         if action == QUIT then
             break
         elseif action_is_window_switch(action) then
@@ -1107,8 +1214,41 @@ local function run_tui(paths, debug, dumb_tui)
             else
                 window.handle_scroll(action)
             end
-        elseif action_is_cursor(action) then
-            window.handle_cursor(action)
+
+        elseif action_is_motion(action) then
+            if op_action then
+                -- Multiply counts unless both are nil, then pass nil
+                local count = op_count and (op_count * (count or 1)) or count
+                local stop, mtype, inc = window.get_motion_props(
+                        count, action)
+                current_mode = operate(window, window.cursor, stop,
+                        op_action, mtype, inc)
+            else
+                window.handle_cursor(count, action)
+            end
+
+        ------------------------------------------------------------------------
+        -- Normal mode ---------------------------------------------------------
+        ------------------------------------------------------------------------
+        elseif current_mode == NORMAL_MODE and action_is_operator(action) then
+            op_action, op_count = action, count
+            current_mode = OPERATOR_MODE
+
+        ------------------------------------------------------------------------
+        -- Operator mode -------------------------------------------------------
+        ------------------------------------------------------------------------
+
+        -- Handle double operators: cc, dd, etc.
+        elseif current_mode == OPERATOR_MODE and action_is_operator(action) then
+            assert(action == op_action)
+            -- Multiply counts unless both are nil, then pass 1 (unlike default
+            -- counts for motions, which pass nil)
+            local count = op_count and (op_count * (count or 1)) or count or 1
+            -- Double operator with count works like [count - 1]j
+            local stop, mtype, inc = window.get_motion_props(
+                    count - 1, MOTION_DOWN)
+            current_mode = operate(window, window.cursor, stop,
+                    op_action, mtype, inc)
 
         ------------------------------------------------------------------------
         -- Insert Mode ---------------------------------------------------------
@@ -1132,7 +1272,7 @@ local function run_tui(paths, debug, dumb_tui)
             -- HACK: just re-parse the whole buffer, and leak the old ast
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?
-            window.handle_cursor(data == 10 and CURSOR_NL or CURSOR_RIGHT)
+            window.handle_cursor(1, data == 10 and MOTION_NL or MOTION_RIGHT)
 
         ------------------------------------------------------------------------
         -- Visual Mode ---------------------------------------------------------
@@ -1143,18 +1283,9 @@ local function run_tui(paths, debug, dumb_tui)
         elseif action == EXIT_VISUAL then
             current_mode = NORMAL_MODE
             window.visual_start = nil
-        elseif action == DELETE then
-            local visual_start, visual_end = window.visual_start, window.cursor
-            if visual_start > visual_end then
-                visual_start, visual_end = visual_end, visual_start
-            end
-            local start = zmt.get_abs_byte_offset(window.buf.tree,
-                    visual_start.line, visual_start.byte)
-            local stop = zmt.get_abs_byte_offset(window.buf.tree,
-                    visual_end.line, visual_end.byte) + 1
-            window.buf.tree = zmt.delete_byte_range(window.buf.tree, start, stop)
-            current_mode = NORMAL_MODE
-            window.cursor = window.visual_start
+        elseif current_mode == VISUAL_MODE and action_is_operator(action) then
+            current_mode = operate(window, window.visual_start, window.cursor,
+                    action, M_CHARWISE, M_INC)
             window.visual_start = nil
         else
             --error('unknown action', action)
