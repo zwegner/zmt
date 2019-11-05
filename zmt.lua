@@ -90,6 +90,25 @@ local HL_TYPE = {
 local LINE_NB_FMT = '%4d '
 local LINE_NB_WIDTH = 5
 
+local POS_META = {
+    __eq = function (a, b)
+        return a.line == b.line and a.byte == b.byte
+    end,
+    __lt = function (a, b)
+        return a.line < b.line or (a.line == b.line and a.byte < b.byte)
+    end
+}
+
+local function Pos(line, byte)
+    local self = {}
+    setmetatable(self, POS_META)
+    self.line, self.byte = line, byte
+    function self.copy()
+        return Pos(self.line, self.byte)
+    end
+    return self
+end
+
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
 --------------------------------------------------------------------------------
@@ -362,15 +381,15 @@ local function EventContext(window, query, width)
         -- Set next potential line wrap event
         next_wrap_offset = offset + width
         -- If this is the line with the cursor, set up an event
-        cursor_offset = (line == window.curs_line and offset + window.curs_byte)
+        cursor_offset = (line == window.cursor.line and
+                offset + window.cursor.byte)
         -- Same, but for visual mode
-        if window.visual_start_line then
-            visual_start = (line == window.visual_start_line and
-                    offset + window.visual_start_byte)
-            visual_end = (line == window.curs_line and offset + window.curs_byte)
-            if window.visual_start_line > window.curs_line or
-                (window.visual_start_line == window.curs_line and
-                window.visual_start_byte > window.curs_byte) then
+        if window.visual_start then
+            visual_start = (line == window.visual_start.line and
+                    offset + window.visual_start.byte)
+            visual_end = (line == window.cursor.line and
+                    offset + window.cursor.byte)
+            if window.visual_start > window.cursor then
                 visual_start, visual_end = visual_end, visual_start
             end
         else
@@ -381,7 +400,7 @@ local function EventContext(window, query, width)
         if first then
             first = false
             query.reset(offset)
-            if window.visual_start_line and window.visual_start_line < line then
+            if window.visual_start and window.visual_start.line < line then
                 visual_start = offset
             end
         end
@@ -861,11 +880,11 @@ local function Window(buf, rows, cols, y, x)
     self.buf = buf
     self.win = nc.newwin(rows, cols, y, x)
     self.rows, self.cols, self.y, self.x = rows, cols, y, x
-    self.curs_line, self.curs_byte = 0, 0
+    self.cursor = Pos(0, 0)
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line = 0
-    self.visual_start_line, self.visual_start_byte = nil
+    self.visual_start = nil
 
     function self.clear()
         self.curs_row, self.curs_col = nil, nil
@@ -883,25 +902,21 @@ local function Window(buf, rows, cols, y, x)
 
     function self.handle_cursor(action)
         local dy, dx = get_cursor_movement(action)
-        self.curs_line = self.curs_line + dy
-        self.curs_byte = self.curs_byte + dx
+        self.cursor.line = self.cursor.line + dy
+        self.cursor.byte = self.cursor.byte + dx
         self.clip_cursor()
 
-        if self.curs_line < self.start_line then
-            self.start_line = self.curs_line
+        if self.cursor.line < self.start_line then
+            self.start_line = self.cursor.line
         -- XXX line/row size. also, # of rows with status line
-        elseif self.curs_line > self.start_line + self.rows - 2 then
-            self.start_line = self.curs_line - self.rows + 2
+        elseif self.cursor.line > self.start_line + self.rows - 2 then
+            self.start_line = self.cursor.line - self.rows + 2
         end
         self.clip_view()
     end
 
     function self.mark_cursor(row, col)
         self.curs_row, self.curs_col = row, col
-    end
-
-    function self.get_cursor()
-        return self.curs_line, self.curs_byte
     end
 
     function self.write_at(row, col, attr, str, len)
@@ -913,12 +928,12 @@ local function Window(buf, rows, cols, y, x)
     end
 
     function self.clip_cursor()
-        self.curs_line = math.max(0, math.min(self.curs_line,
+        self.cursor.line = math.max(0, math.min(self.cursor.line,
                 buf.get_line_count() - 1))
         -- XXX multibyte
         local len = tonumber(zmt.get_tree_line_length(self.buf.tree,
-                self.curs_line)) - 1
-        self.curs_byte = math.max(0, math.min(self.curs_byte, len))
+                self.cursor.line)) - 1
+        self.cursor.byte = math.max(0, math.min(self.cursor.byte, len))
     end
 
     function self.clip_view()
@@ -1098,8 +1113,8 @@ local function run_tui(paths, debug, dumb_tui)
         elseif action == ENTER_INSERT then
             current_mode = INSERT_MODE
             -- Split the tree at the cursor offset
-            local line, byte = window.get_cursor()
-            window.buf.tree = zmt.split_at_offset(window.buf.tree, line, byte)
+            window.buf.tree = zmt.split_at_offset(window.buf.tree,
+                    window.cursor.line, window.cursor.byte)
         elseif action == EXIT_INSERT then
             current_mode = NORMAL_MODE
         elseif action == INSERT_CHAR then
@@ -1121,11 +1136,10 @@ local function run_tui(paths, debug, dumb_tui)
         ------------------------------------------------------------------------
         elseif action == ENTER_VISUAL then
             current_mode = VISUAL_MODE
-            window.visual_start_line, window.visual_start_byte = window.get_cursor()
+            window.visual_start = window.cursor.copy()
         elseif action == EXIT_VISUAL then
             current_mode = NORMAL_MODE
-            window.visual_start_line, window.visual_start_byte = nil
-
+            window.visual_start = nil
         else
             --error('unknown action', action)
         end
