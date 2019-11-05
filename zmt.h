@@ -227,6 +227,7 @@ meta_node_t *create_leaf();
 // Metadata functions
 offset_t get_tree_total_size(meta_tree_t *tree);
 uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line);
+uint64_t get_abs_byte_offset(meta_tree_t *tree, uint64_t line, uint64_t byte);
 
 // Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree, enum ITER_STATE start);

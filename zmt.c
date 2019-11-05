@@ -278,6 +278,12 @@ uint64_t get_tree_line_length(meta_tree_t *tree, uint64_t line) {
     return iter->start_offset.byte - start_offset;
 }
 
+uint64_t get_abs_byte_offset(meta_tree_t *tree, uint64_t line, uint64_t byte) {
+    meta_iter_t iter[1];
+    (void)iter_start_at(iter, tree, line, 0);
+    return iter->start_offset.byte + byte;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Iteration ///////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////

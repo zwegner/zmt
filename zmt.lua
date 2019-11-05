@@ -50,6 +50,8 @@ local
     ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL, EXIT_VISUAL, QUIT,
     -- Insert mode
     INSERT_CHAR,
+    -- Normal mode
+    DELETE,
     -- Cursor
     _CURSOR_MIN, CURSOR_UP, CURSOR_DOWN, CURSOR_LEFT, CURSOR_RIGHT,
     CURSOR_HOME, CURSOR_END, CURSOR_FIRST, CURSOR_LAST, CURSOR_NL, _CURSOR_MAX,
@@ -693,6 +695,7 @@ local INPUT_TABLES = {
     },
     [VISUAL_MODE] = {
         ['\027']            = EXIT_VISUAL,
+        ['d']               = DELETE,
         ['h']               = CURSOR_LEFT,
         ['j']               = CURSOR_DOWN,
         ['k']               = CURSOR_UP,
@@ -1139,6 +1142,19 @@ local function run_tui(paths, debug, dumb_tui)
             window.visual_start = window.cursor.copy()
         elseif action == EXIT_VISUAL then
             current_mode = NORMAL_MODE
+            window.visual_start = nil
+        elseif action == DELETE then
+            local visual_start, visual_end = window.visual_start, window.cursor
+            if visual_start > visual_end then
+                visual_start, visual_end = visual_end, visual_start
+            end
+            local start = zmt.get_abs_byte_offset(window.buf.tree,
+                    visual_start.line, visual_start.byte)
+            local stop = zmt.get_abs_byte_offset(window.buf.tree,
+                    visual_end.line, visual_end.byte) + 1
+            window.buf.tree = zmt.delete_byte_range(window.buf.tree, start, stop)
+            current_mode = NORMAL_MODE
+            window.cursor = window.visual_start
             window.visual_start = nil
         else
             --error('unknown action', action)
