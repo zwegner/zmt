@@ -576,6 +576,7 @@ local function draw_lines(window, is_focused)
             event_ctx.mark_line_start(line, offset)
             set_event()
 
+            local skip = false
             -- When drawing the very first line, read through events to get
             -- the current highlight state, which might start above the screen
             if last_line == -1 then
@@ -583,9 +584,9 @@ local function draw_lines(window, is_focused)
                     handle_event(false, '')
                 end
                 cur_hl = hl_stack[#hl_stack]
+                skip = window.start_byte > 0
             end
 
-            local skip = (line == window.start_line and window.start_byte > 0)
             draw_number_column(window, row, line, false, skip)
             col = LINE_NB_WIDTH
             last_line = line
@@ -970,6 +971,7 @@ local function Window(buf, rows, cols, y, x)
     function self.handle_cursor(count, action)
         self.cursor = self.get_motion_props(count, action)
 
+        -- XXX handle start_byte
         if self.cursor.line < self.start_line then
             self.start_line = self.cursor.line
         -- XXX line/row size. also, # of rows with status line

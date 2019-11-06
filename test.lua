@@ -1,4 +1,4 @@
-#!/usr/bin/env luajit-2.1.0-beta3
+#!/usr/bin/env luajit
 require('stdlib')
 local zmt = require('zmt')
 

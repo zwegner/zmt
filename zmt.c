@@ -766,7 +766,8 @@ meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
     return append_bytes_to_filler(tree, data, len);
 }
 
-meta_tree_t *delete_byte_range(meta_tree_t *tree, uint64_t start, uint64_t end) {
+meta_tree_t *delete_byte_range(meta_tree_t *tree, uint64_t start,
+        uint64_t end) {
     assert(start < end);
 
     meta_iter_t iter[1];

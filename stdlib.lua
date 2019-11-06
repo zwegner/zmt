@@ -33,12 +33,8 @@ function iter_unpack(table)
     end)
 end
 
-function iter(...)
-    return ipairs({...})
-end
-
 function iter_bytes(str)
-    return ipairs({str:byte(1, -1)})
+    return ipairs{str:byte(1, -1)}
 end
 
 function str(value)
@@ -58,7 +54,15 @@ function str(value)
 end
 
 function astr(array)
-    return '{' .. table.concat(array, ', ') .. '}'
+    return '{' .. table.concat(amap(array, str), ', ') .. '}'
+end
+
+function amap(array, fn)
+    local result = {}
+    for _, v in ipairs(array) do
+        result[#result + 1] = fn(v)
+    end
+    return result
 end
 
 function right_pad(str, len)
@@ -67,7 +71,7 @@ end
 
 function concat(...)
     local result = {}
-    for _, table in iter(...) do
+    for _, table in ipairs{...} do
         for _, item in ipairs(table) do
             result[#result + 1] = item
         end
