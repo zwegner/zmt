@@ -168,7 +168,7 @@ function module.iter_lines(tree, start_line, start_byte)
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')
                 assert(idx ~= nil)
-                local part = piece:sub(1, idx)
+                local part = piece:sub(1, idx - 1)
                 piece = piece:sub(idx + 1)
                 coroutine.yield(line, offset, true, part)
                 offset = offset + idx
@@ -532,7 +532,7 @@ local function draw_lines(window, is_focused)
     -- Update state based on the current event. Generally called at the exact
     -- offset of the event, except when handling highlights that start before
     -- the start of the screen. This also advances the event iterator.
-    local function handle_event()
+    local function handle_event(is_end, piece)
         -- Start highlight
         if event_type == EV_HL_BEGIN then
             -- Push this highlight. Duplicate the top stack if this is
@@ -551,8 +551,7 @@ local function draw_lines(window, is_focused)
             visual_hl = nil
         -- Line wrap. HACK: make sure to not wrap if this is the last
         -- character of a line
-        elseif event_type == EV_WRAP then
-        --elseif event_type == EV_WRAP and (not is_end or #piece > 0) then
+        elseif event_type == EV_WRAP and (not is_end or #piece > 0) then
             row = row + 1
             col = LINE_NB_WIDTH
             draw_number_column(window, row, line, true, false)
@@ -581,7 +580,7 @@ local function draw_lines(window, is_focused)
             -- the current highlight state, which might start above the screen
             if last_line == -1 then
                 while offset > event_offset do
-                    handle_event()
+                    handle_event(false, '')
                 end
                 cur_hl = hl_stack[#hl_stack]
             end
@@ -612,7 +611,7 @@ local function draw_lines(window, is_focused)
 
             -- We've reached an event, update the current state
             if offset == event_offset then
-                handle_event()
+                handle_event(is_end, piece)
             end
         end
 
@@ -1063,7 +1062,7 @@ local function Window(buf, rows, cols, y, x)
         -- Update for line-wise visual
         if self.visual_mode == VISUAL_LINE_MODE then
             start.byte = 0
-            stop.byte = self.buf.get_line_len(stop.line) - 1
+            stop.byte = self.buf.get_line_len(stop.line) - 2
         end
         return start, stop.delta(0, 1)
     end
@@ -1194,7 +1193,7 @@ local function run_tui(paths, debug, dumb_tui)
 
         -- Handle linewise/charwise and inclusive/exclusive
         if mtype == M_LINEWISE then
-            assert(inc == M_INC)
+            -- XXX ignore inclusive/exclusive
             start.byte = 0
             -- Sorta hacky: linewise change operator expects to get a new
             -- line when starting the insert, so cut off before the last byte
