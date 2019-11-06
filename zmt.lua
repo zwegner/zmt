@@ -35,20 +35,26 @@ local nc = zmt
 
 -- Editor definitions
 
--- Mode enum
-local NORMAL_MODE, INSERT_MODE, VISUAL_MODE, OPERATOR_MODE, check = enum(5)
+-- Modes
+local NORMAL_MODE, INSERT_MODE, VISUAL_CHAR_MODE, VISUAL_LINE_MODE,
+        OPERATOR_MODE, check = enum(50)
 assert(check ~= nil)
 local MODE_STR = {
     [NORMAL_MODE] = '',
     [INSERT_MODE] = '-- INSERT --',
-    [VISUAL_MODE] = '-- VISUAL --',
-    [OPERATOR_MODE] = '',
+    [VISUAL_CHAR_MODE] = '-- VISUAL --',
+    [VISUAL_LINE_MODE] = '-- VISUAL LINE --',
 }
+
+local function mode_is_visual(mode)
+    return (mode == VISUAL_CHAR_MODE or mode == VISUAL_LINE_MODE)
+end
 
 -- Action enum
 local
     -- Generic/mode switching commands
-    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL, EXIT_VISUAL, QUIT,
+    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL_CHAR, ENTER_VISUAL_LINE, EXIT_VISUAL,
+    QUIT,
     -- Operators
     _OP_MIN, OP_CHANGE, OP_DELETE, _OP_MAX,
     -- Motions
@@ -372,14 +378,22 @@ local function EventContext(window, query, width)
     -- Dynamic events: line wrap and cursor
     local next_wrap_offset
     local cursor_offset = nil
-    local visual_start, visual_end
+    local visual_start, visual_end = nil, nil
+    local visual_start_off, visual_end_off = nil, nil
 
     -- Event buffer, for managing nested highlights
     local event_buf = {}
     local event_start, event_end = 0, 0
     local next_hl_event = {-1, nil, nil}
 
-    local first = true
+    function self.reset(line, offset)
+        -- Start the tree-sitter query over
+        query.reset(offset)
+        visual_start, visual_end = window.get_visual_range()
+        if visual_start and visual_start.line < line then
+            visual_start = Pos(line, offset)
+        end
+    end
 
     function self.mark_line_start(line, offset)
         -- Set next potential line wrap event
@@ -388,26 +402,10 @@ local function EventContext(window, query, width)
         cursor_offset = (line == window.cursor.line and
                 offset + window.cursor.byte)
         -- Same, but for visual mode
-        if window.visual_start then
-            visual_start = (line == window.visual_start.line and
-                    offset + window.visual_start.byte)
-            visual_end = (line == window.cursor.line and
-                    offset + window.cursor.byte)
-            if window.visual_start > window.cursor then
-                visual_start, visual_end = visual_end, visual_start
-            end
-        else
-            visual_start, visual_end = nil, nil
-        end
-
-        -- Start the tree-sitter query over once we get the first byte offset
-        if first then
-            first = false
-            query.reset(offset)
-            if window.visual_start and window.visual_start.line < line then
-                visual_start = offset
-            end
-        end
+        visual_start_off = (visual_start and line == visual_start.line and
+                offset + visual_start.byte)
+        visual_end_off = (visual_end and line == visual_end.line and
+                offset + visual_end.byte)
     end
 
     function self.next_capture_event()
@@ -448,8 +446,8 @@ local function EventContext(window, query, width)
         -- Build a table of candidate events, and find the nearest one
         local events = {
             {next_wrap_offset, EV_WRAP, nil},
-            {visual_start, EV_VISUAL_BEGIN, 'visual'},
-            {visual_end, EV_VISUAL_END, 'visual'},
+            {visual_start_off, EV_VISUAL_BEGIN, 'visual'},
+            {visual_end_off, EV_VISUAL_END, 'visual'},
             {cursor_offset, EV_CURSOR, nil},
             {next_wrap_offset, EV_WRAP, nil},
         }
@@ -465,9 +463,9 @@ local function EventContext(window, query, width)
         if event_type == EV_CURSOR then
             cursor_offset = nil
         elseif event_type == EV_VISUAL_BEGIN then
-            visual_start = nil
+            visual_start_off = nil
         elseif event_type == EV_VISUAL_END then
-            visual_end = nil
+            visual_end_off = nil
         elseif event_type == EV_WRAP then
             next_wrap_offset = next_wrap_offset + width
         else
@@ -566,7 +564,13 @@ local function draw_lines(window, is_focused)
     end
 
     -- Iterate through all lines in the file
+    local first = true
     for line, offset, is_end, piece in buf.iter_lines_from(window.start_line) do
+        -- On the very first byte offset, update EventContext
+        if first then
+            first = false
+            event_ctx.reset(line, offset)
+        end
         -- Line number display
         if line ~= last_line then
             event_ctx.mark_line_start(line, offset)
@@ -691,7 +695,8 @@ local INPUT_TABLES = {
         ['QQ']              = QUIT,
 
         ['i']               = ENTER_INSERT,
-        ['v']               = ENTER_VISUAL,
+        ['v']               = ENTER_VISUAL_CHAR,
+        ['V']               = ENTER_VISUAL_LINE,
 
         [CTRL('E')]         = SCROLL_DOWN,
         [CTRL('Y')]         = SCROLL_UP,
@@ -705,8 +710,15 @@ local INPUT_TABLES = {
         ['\027']            = EXIT_INSERT,
         ['.']               = handle_insert_char,
     },
-    [VISUAL_MODE] = {
+    [VISUAL_CHAR_MODE] = {
         ['\027']            = EXIT_VISUAL,
+        ['v']               = EXIT_VISUAL,
+        ['V']               = ENTER_VISUAL_LINE,
+    },
+    [VISUAL_LINE_MODE] = {
+        ['\027']            = EXIT_VISUAL,
+        ['v']               = ENTER_VISUAL_CHAR,
+        ['V']               = EXIT_VISUAL,
     },
     [OPERATOR_MODE] = {
         ['.']               = EXIT_OPERATOR,
@@ -749,7 +761,8 @@ end
 -- Post-processing: add operators and motions
 local op_tree = parse_input_table(OPERATOR_TABLE)
 local motion_tree = parse_input_table(MOTION_TABLE)
-for _, mode in ipairs{NORMAL_MODE, VISUAL_MODE, OPERATOR_MODE} do
+for _, mode in ipairs{NORMAL_MODE, VISUAL_CHAR_MODE, VISUAL_LINE_MODE,
+        OPERATOR_MODE} do
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], op_tree)
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], motion_tree)
 end
@@ -760,8 +773,8 @@ local function get_next_input(mode)
     -- Store all current input sequence matches
     local matches = {}
     -- HACK
-    local enable_count = (mode == NORMAL_MODE or mode == VISUAL_MODE or
-            mode == OPERATOR_MODE)
+    local enable_count = (mode == NORMAL_MODE or mode == OPERATOR_MODE or
+            mode_is_visual(mode))
     local count = nil
 
     while true do
@@ -930,7 +943,8 @@ local function Window(buf, rows, cols, y, x)
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line = 0
-    self.visual_start = nil
+    self.visual_mode = nil
+    self.visual_start, self.visual_end = nil, nil
 
     function self.clear()
         self.curs_row, self.curs_col = nil, nil
@@ -947,7 +961,7 @@ local function Window(buf, rows, cols, y, x)
     end
 
     function self.get_motion_props(count, action)
-        local cursor, mtype, inc = get_motion_props(buf, count, action,
+        local cursor, mtype, inc = get_motion_props(self.buf, count, action,
                 self.cursor)
         return self.clip_cursor(cursor), mtype, inc
     end
@@ -978,15 +992,15 @@ local function Window(buf, rows, cols, y, x)
 
     function self.clip_cursor(cursor)
         cursor.line = math.max(0, math.min(cursor.line,
-                buf.get_line_count() - 1))
-        local len = buf.get_line_len(cursor.line) - 1
+                self.buf.get_line_count() - 1))
+        local len = self.buf.get_line_len(cursor.line) - 1
         cursor.byte = math.max(0, math.min(cursor.byte, len))
         return cursor
     end
 
     function self.clip_view()
         self.start_line = math.max(0, math.min(self.start_line,
-                buf.get_line_count() - 1))
+                self.buf.get_line_count() - 1))
     end
 
     function self.handle_scroll(action)
@@ -999,6 +1013,36 @@ local function Window(buf, rows, cols, y, x)
         -- but should speed things up a bit
         nc.wscrl(self.win, self.start_line - old_start_line)
         -- XXX update cursor
+    end
+
+    -- Visual mode
+    function self.start_visual(mode, cursor)
+        self.visual_start = cursor.copy()
+        self.update_visual(mode, cursor)
+    end
+    function self.update_visual(mode, cursor)
+        self.visual_mode = mode
+        self.visual_end = cursor.copy()
+    end
+    function self.get_visual_range()
+        if not self.visual_mode then
+            return nil, nil
+        end
+        local start, stop = self.visual_start.copy(), self.visual_end.copy()
+        -- Ensure start < end
+        if start > stop then
+            start, stop = stop, start
+        end
+        -- Update for line-wise visual
+        if self.visual_mode == VISUAL_LINE_MODE then
+            start.byte = 0
+            stop.byte = self.buf.get_line_len(stop.line) - 1
+        end
+        return start, stop.delta(0, 1)
+    end
+    function self.end_visual()
+        self.visual_mode = nil
+        self.visual_start, self.visual_end = nil, nil
     end
 
     return self
@@ -1218,6 +1262,9 @@ local function run_tui(paths, debug, dumb_tui)
                         op_action, mtype, inc)
             else
                 window.handle_cursor(count, action)
+                if mode_is_visual(current_mode) then
+                    window.update_visual(current_mode, window.cursor)
+                end
             end
 
         ------------------------------------------------------------------------
@@ -1270,16 +1317,24 @@ local function run_tui(paths, debug, dumb_tui)
         ------------------------------------------------------------------------
         -- Visual Mode ---------------------------------------------------------
         ------------------------------------------------------------------------
-        elseif action == ENTER_VISUAL then
-            current_mode = VISUAL_MODE
-            window.visual_start = window.cursor.copy()
+        elseif action == ENTER_VISUAL_CHAR or action == ENTER_VISUAL_LINE then
+            local next_mode = (action == ENTER_VISUAL_CHAR) and VISUAL_CHAR_MODE
+                    or VISUAL_LINE_MODE
+            if mode_is_visual(current_mode) then
+                window.update_visual(next_mode, window.cursor)
+            else
+                window.start_visual(next_mode, window.cursor)
+            end
+            current_mode = next_mode
         elseif action == EXIT_VISUAL then
             current_mode = NORMAL_MODE
-            window.visual_start = nil
-        elseif current_mode == VISUAL_MODE and action_is_operator(action) then
-            current_mode = operate(window, window.visual_start, window.cursor,
-                    action, M_CHARWISE, M_INC)
-            window.visual_start = nil
+            window.end_visual()
+        elseif mode_is_visual(current_mode) and action_is_operator(action) then
+            mtype = (current_mode == VISUAL_CHAR_MODE) and M_CHARWISE or
+                    M_LINEWISE
+            local start, stop = window.get_visual_range()
+            current_mode = operate(window, start, stop, action, mtype, M_EXC)
+            window.end_visual()
         else
             --error('unknown action', action)
         end
