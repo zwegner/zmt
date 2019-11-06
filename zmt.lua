@@ -53,8 +53,8 @@ end
 -- Action enum
 local
     -- Generic/mode switching commands
-    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL_CHAR, ENTER_VISUAL_LINE, EXIT_VISUAL,
-    QUIT,
+    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL_CHAR, ENTER_VISUAL_LINE,
+    EXIT_VISUAL, QUIT,
     -- Operators
     _OP_MIN, OP_CHANGE, OP_DELETE, _OP_MAX,
     -- Motions
@@ -155,11 +155,12 @@ end
 -- Iterate through pieces, broken up by lines. We yield successive tuples of
 -- the form (line_number, byte_offset, is_end, piece), where is_end marks
 -- pieces that are at the end of their respective lines
-function module.iter_lines(tree, line_start, line_end)
+function module.iter_lines(tree, start_line, start_byte)
     return coroutine.wrap(function()
         -- Start a piece iterator at the start line
-        local line = line_start
-        for iter, node, piece in module.iter_nodes(tree, line_start, 0) do
+        local line = start_line
+        for iter, node, piece in module.iter_nodes(tree,
+                start_line, start_byte) do
             -- Chop up this piece into lines. We only do the scan the exact
             -- number of times needed
             local offset = tonumber(iter.start_offset.byte)
@@ -172,12 +173,6 @@ function module.iter_lines(tree, line_start, line_end)
                 coroutine.yield(line, offset, true, part)
                 offset = offset + idx
                 line = line + 1
-                if line > line_end then
-                    break
-                end
-            end
-            if line > line_end then
-                break
             end
 
             -- Yield the last part of this piece
@@ -311,7 +306,8 @@ local function TSContext()
 
             local offset = ffi.new('uint32_t[1]')
             local error_type = ffi.new('uint32_t[1]')
-            local query = ts.ts_query_new(lang, q_text, #q_text, offset, error_type)
+            local query = ts.ts_query_new(lang, q_text, #q_text, offset,
+                    error_type)
             if query == nil then
                 error(('error parsing query file %q, error %d at offset %d')
                         :format(query_path, error_type[0], offset[0]))
@@ -476,12 +472,15 @@ local function EventContext(window, query, width)
     return self
 end
 
-local function draw_number_column(window, row, line, wrap)
+local function draw_number_column(window, row, line, wrap, skip)
     local line_nb_str
     if wrap then
         line_nb_str = (' '):rep(LINE_NB_WIDTH)
     else
         line_nb_str = LINE_NB_FMT:format(line + 1):sub(1, LINE_NB_WIDTH)
+        if skip then
+            line_nb_str = line_nb_str:gsub(' ', '-')
+        end
     end
     window.write_at(row, 0, HL_TYPE['line_nb'], line_nb_str, LINE_NB_WIDTH)
 end
@@ -507,7 +506,8 @@ local function draw_lines(window, is_focused)
     window.clear()
 
     -- Render event handling
-    local event_ctx = EventContext(window, buf.query, window.cols - LINE_NB_WIDTH)
+    local event_ctx = EventContext(window, buf.query,
+            window.cols - LINE_NB_WIDTH)
     -- The current render event we're waiting for
     local event_offset, event_type, event_hl = -1, nil, nil
     -- A stack of highlights, so highlights can nest
@@ -555,7 +555,7 @@ local function draw_lines(window, is_focused)
         --elseif event_type == EV_WRAP and (not is_end or #piece > 0) then
             row = row + 1
             col = LINE_NB_WIDTH
-            draw_number_column(window, row, line, true)
+            draw_number_column(window, row, line, true, false)
         -- Mark cursor
         elseif event_type == EV_CURSOR then
             window.mark_cursor(row, col - LINE_NB_WIDTH)
@@ -565,7 +565,8 @@ local function draw_lines(window, is_focused)
 
     -- Iterate through all lines in the file
     local first = true
-    for line, offset, is_end, piece in buf.iter_lines_from(window.start_line) do
+    for line, offset, is_end, piece in buf.iter_lines_from(window.start_line,
+            window.start_byte) do
         -- On the very first byte offset, update EventContext
         if first then
             first = false
@@ -585,7 +586,8 @@ local function draw_lines(window, is_focused)
                 cur_hl = hl_stack[#hl_stack]
             end
 
-            draw_number_column(window, row, line, false)
+            local skip = (line == window.start_line and window.start_byte > 0)
+            draw_number_column(window, row, line, false, skip)
             col = LINE_NB_WIDTH
             last_line = line
         end
@@ -860,9 +862,8 @@ local function Buffer(path)
         return tonumber(zmt.get_tree_line_length(self.tree, line))
     end
 
-    function self.iter_lines_from(start_line)
-        return module.iter_lines(self.tree,
-            start_line, self.get_line_count())
+    function self.iter_lines_from(start_line, start_byte)
+        return module.iter_lines(self.tree, start_line, start_byte)
     end
 
     return self
@@ -874,7 +875,8 @@ local function TreeDebugBuffer(buf)
     self.path = '[tree-debug]'
     self.lines = 0
 
-    function self.iter_lines_from(start_line)
+    function self.iter_lines_from(start_line, start_byte)
+        -- XXX ignore start_byte
         return coroutine.wrap(function ()
             local line_nb = 0
             self.lines = 1
@@ -942,7 +944,7 @@ local function Window(buf, rows, cols, y, x)
     self.cursor = Pos(0, 0)
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
-    self.start_line = 0
+    self.start_line, self.start_byte = 0, 0
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
 
@@ -1005,13 +1007,38 @@ local function Window(buf, rows, cols, y, x)
 
     function self.handle_scroll(action)
         local scroll = get_scroll_amount(action, self)
-        local old_start_line = self.start_line
-        self.start_line = self.start_line + scroll
+        local width = self.cols - LINE_NB_WIDTH
+        -- Scroll down
+        if scroll > 0 then
+            local len = self.buf.get_line_len(self.start_line) - 1
+            local line_count = self.buf.get_line_count()
+            while scroll > 0 and self.start_line < line_count do
+                if self.start_byte + width < len then
+                    self.start_byte = self.start_byte + width
+                else
+                    self.start_line = self.start_line + 1
+                    self.start_byte = 0
+                    len = self.buf.get_line_len(self.start_line) - 1
+                end
+                scroll = scroll - 1
+            end
+        -- Scroll up
+        else
+            while scroll < 0 and (self.start_line > 0 or self.start_byte > 0) do
+                if self.start_byte > 0 then
+                    self.start_byte = self.start_byte - width
+                else
+                    self.start_line = self.start_line - 1
+                    local len = self.buf.get_line_len(self.start_line) - 1
+                    self.start_byte = len - (len % width)
+                end
+                scroll = scroll + 1
+            end
+            self.start_byte = math.max(self.start_byte, 0)
+        end
+
         self.clip_view()
-        -- Scroll screen contents with ncurses. This isn't really
-        -- necessary, since we're going to update the whole screen,
-        -- but should speed things up a bit
-        nc.wscrl(self.win, self.start_line - old_start_line)
+
         -- XXX update cursor
     end
 
