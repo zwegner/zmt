@@ -674,6 +674,10 @@ end
 
 local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
 
+local function byte_in_range(c, a, b)
+    return (c >= string.byte(a) and c <= string.byte(b))
+end
+
 -- Input sequences, per mode
 
 local MOTION_TABLE = {
@@ -770,28 +774,35 @@ for _, mode in ipairs{NORMAL_MODE, VISUAL_CHAR_MODE, VISUAL_LINE_MODE,
 end
 
 -- Read input until we parse a command
-local function get_next_input(mode)
-    local input_tree = INPUT_TREES[mode]
-    -- Store all current input sequence matches
-    local matches = {}
-    -- HACK
-    local enable_count = (mode == NORMAL_MODE or mode == OPERATOR_MODE or
-            mode_is_visual(mode))
-    local count = nil
+local function InputHandler()
+    local self = {}
+    local matches = nil
+    local enable_count, done_count, count = nil, nil, nil
+    local input, action, data = nil, nil, nil
 
-    while true do
-        local c = C.getchar()
-        local input, action, data = nil, nil, nil
+    function self.reset(mode)
+        input_tree = INPUT_TREES[mode]
+        -- Store all current input sequence matches
+        matches = {}
+        -- HACK
+        enable_count = (mode == NORMAL_MODE or mode == OPERATOR_MODE or
+                mode_is_visual(mode))
+        done_count = false
+        count = nil
+        input, action, data = nil, nil, nil
+    end
 
+    function self.feed(c)
         -- Parse count
-        if enable_count and count == nil and c >= string.byte('1') and
-                c <= string.byte('9') then
-            count = c - string.byte('0')
-            c = C.getchar()
-            while c >= string.byte('0') and c <= string.byte('9') do
+        if enable_count and not done_count then
+            if count == nil and byte_in_range(c, '1', '9') then
+                count = c - string.byte('0')
+                return nil
+            elseif count ~= nil and byte_in_range(c, '0', '9') then
                 count = count * 10 + (c - string.byte('0'))
-                c = C.getchar()
+                return nil
             end
+            done_count = true
             matches = {}
         end
 
@@ -835,12 +846,15 @@ local function get_next_input(mode)
         end
 
         if action ~= nil then
-            return count, action, input, data
+            return action, count, input, data
         -- Clear out count if no matches are in progress
         elseif #matches == 0 then
             count = nil
+            done_count = false
         end
+        return nil
     end
+    return self
 end
 
 --------------------------------------------------------------------------------
@@ -1237,16 +1251,39 @@ local function run_tui(paths, debug, dumb_tui)
         end
     end
 
+    local input_handler = InputHandler()
+    -- Input buffer
+    local buf_size = 64
+    local in_buf = ffi.new('uint8_t[?]', buf_size)
+    local n_read, n_used = 0, 0
+    -- XXX for some reason just #include-ing unistd.h makes this function not found...
+    ffi.cdef('ssize_t read(int, void *, size_t);')
+
     while true do
-        -- Draw screen
-        draw_mode_line(mode_window, current_mode)
-        draw_all()
-        -- Also, refresh the current window again, to make sure the cursor is
-        -- in the right place
-        window.refresh()
+        -- Only draw the screen if we've processed the whole input buffer
+        if n_used >= n_read then
+            -- Draw screen
+            draw_mode_line(mode_window, current_mode)
+            draw_all()
+            -- Also, refresh the current window again, to make sure the cursor is
+            -- in the right place
+            window.refresh()
+        end
 
         -- Handle input
-        local count, action, input, data = get_next_input(current_mode)
+        local action, count, input, data
+        input_handler.reset(current_mode)
+        while true do
+            -- Read a chunk of input from stdin if our buffer is empty
+            while n_used >= n_read do
+                n_read = ffi.C.read(0, in_buf, buf_size)
+                n_used = 0
+            end
+            local char = in_buf[n_used]
+            n_used = n_used + 1
+            action, count, input, data = input_handler.feed(char)
+            if action ~= nil then break end
+        end
 
         -- Clear out any pending operator
         if current_mode ~= OPERATOR_MODE then
