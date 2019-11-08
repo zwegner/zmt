@@ -37,6 +37,20 @@ function iter_bytes(str)
     return ipairs{str:byte(1, -1)}
 end
 
+function split(s, pattern)
+    local result = {}
+    while true do
+        local start, stop = s:find(pattern)
+        if start == nil then
+            result[#result + 1] = s
+            break
+        end
+        result[#result + 1] = s:sub(1, start - 1)
+        s = s:sub(stop + 1)
+    end
+    return result
+end
+
 function str(value)
     if type(value) == 'table' then
         local s = ''
@@ -125,14 +139,19 @@ local function equals(a, b, path)
     end
 end
 
-function assert_neq(a, b, name, expected)
+-- Hacky global variable to store a custom function that's called on errors
+ERROR_INFO_FN = nil
+
+function assert_neq(a, b, name, error_fn, expected)
     expected = expected or false
     local result, msg = unpack(equals(a, b, {}) or {true})
     msg = ('assertion%s failed%s'):format(name and ' ['..name..']' or '',
         msg and ': ' .. msg or '')
-    return assert(result == expected, msg)
+    ERROR_INFO_FN = error_fn
+    assert(result == expected, msg)
+    ERROR_INFO_FN = nil
 end
 
-function assert_eq(a, b, name)
-    return assert_neq(a, b, name, true)
+function assert_eq(a, b, name, error_fn)
+    return assert_neq(a, b, name, error_fn, true)
 end

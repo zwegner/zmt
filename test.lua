@@ -4,9 +4,14 @@ local zmt = require('zmt')
 
 -- Helpers
 
+local VERBOSE = false
+
 local TEST_NAME = ''
 local function test_name(name)
     TEST_NAME = name
+    if verbose then
+        print(('  inside test [%s]'):format(TEST_NAME))
+    end
 end
 
 local function piece_list(tree)
@@ -19,7 +24,7 @@ end
 
 local function line_list(tree)
     local l = {''}
-    for _, _, is_end, piece in zmt.iter_lines(tree, 0, 1e100) do
+    for _, _, is_end, piece in zmt.iter_lines(tree, 0, 0) do
         l[#l] = l[#l] .. piece
         if is_end then
             l[#l + 1] = ''
@@ -72,6 +77,45 @@ local function tree_insert_bytes(tree, offset, data)
     return zmt.zmt.insert_bytes_at_offset(tree, 0, offset, data, #data)
 end
 
+local function create_fake_buffer(name, data, piece_size)
+    local chunk = zmt.zmt.write_new_chunk(data, #data)
+    local tree = zmt.zmt.dumb_read_data(chunk, piece_size)
+    return zmt.Buffer(name, tree)
+end
+
+local function check_grid(name, win, expected_grid)
+    test_name(name)
+    zmt.draw_lines(win, true)
+    -- Create a friendly string-based representation of the screen grid
+    local act_grid = {}
+    for r = 0, win.rows - 1 do
+        local line = ''
+        for c = 0, win.cols - 1 do
+            line = line .. string.char(win.grid[r][c].ch)
+        end
+        act_grid[#act_grid + 1] = line
+    end
+
+    -- Parse the expected grid
+    local exp_grid = split(expected_grid, '\n')
+    exp_grid = amap(exp_grid, function (row) return row:match('^ +|(.*)|$') end)
+
+    local function print_grids()
+        local exp_width = math.max(unpack(amap(exp_grid,
+                function(row) return #row end))) + 2
+        local act_width = win.cols + 2
+        -- Work around for lua formatting not supporting %*s
+        local fmt = '    %-'..act_width..'s   %-'..exp_width..'s%s\n'
+        logf(fmt, 'Actual', 'Expected', '')
+        for i = 1, math.max(#act_grid, #exp_grid) do
+            local exp, act = exp_grid[i], act_grid[i]
+            logf(fmt, act and '|'..act..'|', exp and '|'..exp..'|',
+                    act ~= exp and '   <--' or '')
+        end
+    end
+    assert_eq(act_grid, exp_grid, name, print_grids)
+end
+
 -- Tests
 local TESTS = {
     {'stdlib', function ()
@@ -87,6 +131,11 @@ local TESTS = {
         assert_neq({{1}, {1}}, {{1}, {2}})
         assert_eq({{1}, {1, 2}}, {{1}, {1, 2}})
         assert_neq({{1}, {1, 2}}, {{1}, {1, 2, 3}})
+
+        test_name('split')
+        assert_eq(split('a\nb\nc', '\n'), {'a', 'b', 'c'})
+        assert_eq(split('\nabc\n', '\n'), {'', 'abc', ''})
+        assert_eq(split('\n\n\nabc\n\n\n', '\n+'), {'', 'abc', ''})
     end},
 
     {'tree 1', function ()
@@ -125,7 +174,7 @@ local TESTS = {
     end},
 
     {'tree 2', function ()
-        test_name('tree 2')
+        test_name('setup')
         local tree = zmt.zmt.create_tree(true)
 
         local piece = '0123456789\n'
@@ -137,7 +186,7 @@ local TESTS = {
         check_tree(tree, pieces, lines)
 
         -- Insert a bunch of times into the middle of lines
-        test_name('tree 2--split lines')
+        test_name('split lines')
         for i = 1, 10 do
             -- Dumb index math
             local off = 5 + 14 * (i-1)
@@ -203,23 +252,62 @@ local TESTS = {
             end
         end
     end},
+
+    {'line wrapping', function ()
+        local data = ('012345678901234567890123456789\n'):rep(10)
+        local buf = create_fake_buffer('[test]', data, 4)
+        local win = zmt.Window(buf, 10, 20)
+
+
+        check_grid('lines wrap properly 1', win, [[
+            |   1 012345678901234|
+            |     567890123456789|
+            |   2 012345678901234|
+            |     567890123456789|
+            |   3 012345678901234|
+            |     567890123456789|
+            |   4 012345678901234|
+            |     567890123456789|
+            |   5 012345678901234|
+            |[test]              |
+        ]])
+
+        win.rows, win.cols = 8, 12
+
+        check_grid('lines wrap properly 2', win, [[
+            |   1 0123456|
+            |     7890123|
+            |     4567890|
+            |     1234567|
+            |     89     |
+            |   2 0123456|
+            |     7890123|
+            |[test]      |
+        ]])
+    end},
 }
+
+if arg[1] == '-v' then
+    verbose = true
+    table.remove(arg, 1)
+end
 
 local test_filter = #arg > 0 and arg[1]
 
 for i, name, fn in iter_unpack(TESTS) do
     if not test_filter or name:find(test_filter) then
-        io.stdout:write(right_pad('Running test ' .. name .. '...', 50))
+        logf('%s', right_pad('Running test ' .. name .. '...', 50))
         TEST_NAME = ''
         local ok, res = xpcall(fn, debug.traceback)
         if ok then
-            print('[\027[32mPASS\027[0m]')
+            log('[\027[32mPASS\027[0m]')
         else
-            print('[\027[31mFAIL\027[0m]')
-            if #TEST_NAME > 0 then
-                print(('  inside test [%s]:'):format(TEST_NAME))
+            log('[\027[31mFAIL\027[0m]')
+            if #TEST_NAME > 0 and not verbose then
+                logf('  inside test [%s]:\n', TEST_NAME)
             end
-            print(res)
+            if ERROR_INFO_FN then ERROR_INFO_FN() end
+            log(res)
         end
     end
 end

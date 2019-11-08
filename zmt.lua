@@ -174,7 +174,7 @@ function module.iter_lines(tree, start_line, start_byte)
                 -- Cut off any part after a newline
                 local idx = piece:find('\n')
                 assert(idx ~= nil)
-                local part = piece:sub(1, idx - 1)
+                local part = piece:sub(1, idx)
                 piece = piece:sub(idx + 1)
                 coroutine.yield(line, offset, true, part)
                 offset = offset + idx
@@ -577,14 +577,28 @@ function module.draw_lines(window, is_focused)
             draw_number_column(window, row, line, false, skip)
             col = LINE_NB_WIDTH
             last_line = line
+
+            -- HACK: add a space on empty lines
+            if piece == '\n' then
+                piece = ' '
+            end
+        end
+
+        -- HACK: trim off final newline
+        if is_end and piece:sub(-1,-1) == '\n' then
+            piece = piece:sub(1, -2)
         end
 
         -- Chop up this piece into parts separated by events from event_ctx
-        while (#piece > 0 or offset == event_offset) and
-                row < window.rows - 1 do
+        while #piece > 0 and row < window.rows - 1 do
             -- Skip over any events we've already gone past
             while offset > event_offset do
                 next_event()
+            end
+
+            -- We've reached an event, update the current state
+            while offset == event_offset do
+                handle_event(is_end, piece)
             end
 
             -- Output any characters up until the next event
@@ -596,15 +610,14 @@ function module.draw_lines(window, is_focused)
                 offset = offset + #part
                 col = col + #part
             end
-
-            -- We've reached an event, update the current state
-            if offset == event_offset then
-                handle_event(is_end, piece)
-            end
         end
 
         -- Move to the next line if this piece had a newline
         if is_end then
+            -- Handle any remaining events for this line
+            while offset == event_offset do
+                handle_event(true, '')
+            end
             row = row + 1
         end
         -- Check row count
@@ -846,11 +859,11 @@ end
 -- Main ------------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-local function Buffer(path)
+function module.Buffer(path, tree)
     local self = {}
     self.path = path
-    self.chunk = zmt.map_file(path)
-    self.tree = zmt.dumb_read_data(self.chunk, 0)
+    self.tree = tree
+    self.query = TSNullQuery()
 
     function self.get_line_count()
         return tonumber(zmt.get_tree_total_size(self.tree).line) + 1
@@ -866,6 +879,12 @@ local function Buffer(path)
     end
 
     return self
+end
+
+local function open_buffer(path)
+    local chunk = zmt.map_file(path)
+    local tree = zmt.dumb_read_data(chunk, 0)
+    return module.Buffer(path, tree)
 end
 
 local function TreeDebugBuffer(buf)
@@ -922,9 +941,7 @@ local function get_motion_props(buf, raw_count, action, start)
         return Pos(start.line, 0), M_CHARWISE, M_EXC
     elseif action == MOTION_END then
         local len = buf.get_line_len(start.line) - 1
-        -- Sorta hacky: use exclusive motion here instead of inclusive like vim,
-        -- since right now we're counting the final newline in get_line_len()
-        return Pos(start.line, len), M_CHARWISE, M_EXC
+        return Pos(start.line, len), M_CHARWISE, M_INC
     elseif action == MOTION_FIRST then
         return Pos(raw_count and (raw_count - 1) or 0, 0), M_LINEWISE, M_INC
     elseif action == MOTION_LAST then
@@ -1201,7 +1218,7 @@ local function run_ui(ui, paths, debug)
     -- Read input files and parse them
     local buffers = {}
     for _, path in ipairs(paths) do
-        local buf = Buffer(path)
+        local buf = open_buffer(path)
         ts_ctx.parse_buf(buf)
         buffers[#buffers + 1] = buf
 
