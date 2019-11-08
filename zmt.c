@@ -32,6 +32,13 @@ static const meta_node_t HOLE_NODE_SINGLETON = {
 
 static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
         uint64_t line_offset, uint64_t byte_offset);
+// Helper function. This always writes to the same memory, so isn't safe to be
+// called multiple times before using the values.
+char *ptr_string(void *ptr) {
+    static char value[19];
+    sprintf(value, "0x%016llX", (uint64_t)ptr);
+    return value;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Chunks / Files //////////////////////////////////////////////////////////////

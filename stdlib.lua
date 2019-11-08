@@ -47,7 +47,7 @@ function str(value)
     elseif type(value) == 'string' then
         -- %q annoyingly replaces '\n' with '\\\n', that is, a backslash and
         -- then an actual newline. Replace the newline with an 'n'.
-        return ('%q'):format(value):gsub('\n', 'n')
+        return (('%q'):format(value):gsub('\n', 'n'))
     else
         return tostring(value)
     end

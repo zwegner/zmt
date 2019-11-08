@@ -187,10 +187,15 @@ function module.iter_lines(tree, start_line, start_byte)
     end)
 end
 
+local function ptr_string(cdata)
+    return ffi.string(zmt.ptr_string(cdata))
+end
+
 -- Recursive coroutine that formats tree printing
 local function co_tree_print(tree, node, depth)
     local prefix = ('%s %s(%s) b=%s n=%s'):format(
-            ('  '):rep(depth), node, node.flags, node.byte_count, node.nl_count)
+            ('  '):rep(depth), ptr_string(node), node.flags, node.byte_count,
+            node.nl_count)
 
     if bit.band(node.flags, zmt.NODE_LEAF + zmt.NODE_FILLER) ~= 0 then
         if bit.band(node.flags, zmt.NODE_FILLER) ~= 0 then

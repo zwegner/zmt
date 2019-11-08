@@ -247,6 +247,7 @@ meta_tree_t *delete_byte_range(meta_tree_t *tree, uint64_t start, uint64_t end);
 void verify_node(meta_node_t *node);
 
 // XXX experimental/test apis
+char *ptr_string(void *ptr);
 chunk_t *write_new_chunk(const uint8_t *data, uint64_t len);
 meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
         uint64_t byte_offset, const uint8_t *data, uint64_t len);
