@@ -82,7 +82,7 @@ local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_CURSOR, EV_EOF,
 assert(check ~= nil)
 
 -- Color codes for syntax highlighting. Each value is a (fg, bg) pair
-local HL_TYPE = {
+local ATTR_INFO = {
     ['default']             = {15,   0},
     ['comment']             = {69,   0},
     ['keyword']             = {28,   0},
@@ -100,6 +100,12 @@ local HL_TYPE = {
     ['status-unfocused']    = {0,   15},
     ['mode_line']           = {15,   0, 'bold'},
 }
+local ATTR_ID = {}
+local idx = 1
+for k, v in pairs(ATTR_INFO) do
+    ATTR_ID[k] = idx
+    idx = idx + 1
+end
 
 local LINE_NB_FMT = '%4d '
 local LINE_NB_WIDTH = 5
@@ -339,28 +345,6 @@ end
 -- Drawing ---------------------------------------------------------------------
 --------------------------------------------------------------------------------
 
-local HL_ATTRS = {}
-local HL_ATTR_IDS = {}
-
-local function init_color()
-    local idx = 1
-    for k, v in pairs(HL_TYPE) do
-        local fg, bg, ext = unpack(v)
-        nc.init_pair(idx, fg, bg)
-        -- HACK: hardcoded bit offsets, since we don't have the #defines here
-        attr = bit.lshift(idx, 8)
-        if ext == 'bold' then
-            attr = attr + bit.lshift(1, 8+13)
-        elseif ext == 'inv' then
-            attr = attr + bit.lshift(1, 8+10)
-        end
-        HL_TYPE[k] = idx
-        HL_ATTR_IDS[idx] = attr
-        HL_ATTRS[idx] = {fg, bg, ext}
-        idx = idx + 1
-    end
-end
-
 -- EventContext manages rendering events, which are byte offsets in which a
 -- special action needs to take place during rendering, such as changing the
 -- highlight, wrapping the line, or displaying the cursor. We keep a priority
@@ -482,26 +466,24 @@ local function draw_number_column(window, row, line, wrap, skip)
             line_nb_str = line_nb_str:gsub(' ', '-')
         end
     end
-    window.write_at(row, 0, HL_TYPE['line_nb'], line_nb_str, LINE_NB_WIDTH)
+    window.write_at(row, 0, ATTR_ID['line_nb'], line_nb_str, LINE_NB_WIDTH)
 end
 
 local function draw_status_line(window, is_focused)
-    local attr = is_focused and HL_TYPE['status'] or
-            HL_TYPE['status-unfocused']
+    local attr = is_focused and ATTR_ID['status'] or ATTR_ID['status-unfocused']
     local status_line = right_pad(window.buf.path, window.cols)
     window.write_at(window.rows - 1, 0, attr, status_line, #status_line)
-    window.end_row()
+    window.clear_line(window.rows - 1, #status_line, attr)
 end
 
 local function draw_mode_line(window, mode)
-    local attr = HL_TYPE['mode_line']
+    local attr = ATTR_ID['mode_line']
     local mode_line = MODE_STR[mode]
     window.write_at(window.rows - 1, 0, attr, mode_line, #mode_line)
-    window.end_row()
-    window.refresh()
+    window.clear_line(window.rows - 1, #mode_line, attr)
 end
 
-local function draw_lines(window, is_focused)
+function module.draw_lines(window, is_focused)
     local buf = window.buf
     window.clear()
 
@@ -511,9 +493,9 @@ local function draw_lines(window, is_focused)
     -- The current render event we're waiting for
     local event_offset, event_type, event_hl = -1, nil, nil
     -- A stack of highlights, so highlights can nest
-    local hl_stack = {HL_TYPE['default']}
+    local hl_stack = {ATTR_ID['default']}
     -- The current highlight value
-    local cur_hl = HL_TYPE['default']
+    local cur_hl = ATTR_ID['default']
     local visual_hl
 
     local last_line = -1
@@ -537,7 +519,7 @@ local function draw_lines(window, is_focused)
         if event_type == EV_HL_BEGIN then
             -- Push this highlight. Duplicate the top stack if this is
             -- an ignored capture, so we can still pop it off later
-            cur_hl = HL_TYPE[event_hl] or hl_stack[#hl_stack]
+            cur_hl = ATTR_ID[event_hl] or hl_stack[#hl_stack]
             hl_stack[#hl_stack + 1] = cur_hl
         -- End highlight
         elseif event_type == EV_HL_END then
@@ -546,7 +528,7 @@ local function draw_lines(window, is_focused)
             hl_stack[#hl_stack] = nil
             cur_hl = hl_stack[#hl_stack]
         elseif event_type == EV_VISUAL_BEGIN then
-            visual_hl = HL_TYPE['visual']
+            visual_hl = ATTR_ID['visual']
         elseif event_type == EV_VISUAL_END then
             visual_hl = nil
         -- Line wrap. HACK: make sure to not wrap if this is the last
@@ -625,8 +607,6 @@ local function draw_lines(window, is_focused)
     end
 
     draw_status_line(window, is_focused)
-
-    window.refresh()
 end
 
 --------------------------------------------------------------------------------
@@ -950,25 +930,43 @@ local function get_motion_props(buf, raw_count, action, start)
     end
 end
 
-local function Window(buf, rows, cols, y, x)
+function module.Window(buf, rows, cols)
     local self = {}
     self.buf = buf
-    self.win = nc.newwin(rows, cols, y, x)
-    self.rows, self.cols, self.y, self.x = rows, cols, y, x
+    self.rows, self.cols = rows, cols
     self.cursor = Pos(0, 0)
     self.curs_row, self.curs_col = 0, 0
     self.attr = nil
     self.start_line, self.start_byte = 0, 0
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
+    -- XXX multibyte
+    ffi.cdef([[
+        typedef struct {
+            uint8_t ch;
+            uint8_t attr;
+        } grid_cell_t;]])
+    -- Meh, luajit doesn't allow multidimensional variable arrays
+    self.grid = ffi.new('grid_cell_t['..rows..']['..cols..']')
+    local default_attr = ATTR_ID['default']
 
     function self.clear()
         self.curs_row, self.curs_col = nil, nil
-        nc.werase(self.win)
+        for r = 0, self.rows - 1 do
+            for c = 0, self.cols - 1 do
+                self.grid[r][c].ch = 32
+                self.grid[r][c].attr = default_attr
+            end
+        end
     end
-    function self.end_row()
-        nc.wclrtoeol(self.win)
+
+    function self.clear_line(row, start_col, attr)
+        for c = start_col, self.cols - 1 do
+            self.grid[row][c].ch = 32
+            self.grid[row][c].attr = attr
+        end
     end
+
     function self.refresh()
         if self.curs_row and self.curs_col then
             nc.wmove(self.win, self.curs_row, self.curs_col + LINE_NB_WIDTH)
@@ -1000,17 +998,18 @@ local function Window(buf, rows, cols, y, x)
     end
 
     function self.write_at(row, col, attr, str, len)
-        if attr ~= self.attr then
-            nc.wattrset(self.win, HL_ATTR_IDS[attr])
-            self.attr = attr
+        local c = 0
+        while col + c < self.cols and c < len do
+            self.grid[row][col + c].ch = str:byte(c+1, c+1)
+            self.grid[row][col + c].attr = attr
+            c = c + 1
         end
-        nc.mvwaddnstr(self.win, row, col, str, len)
     end
 
     function self.clip_cursor(cursor)
         cursor.line = math.max(0, math.min(cursor.line,
                 self.buf.get_line_count() - 1))
-        local len = self.buf.get_line_len(cursor.line) - 1
+        local len = self.buf.get_line_len(cursor.line) - 2
         cursor.byte = math.max(0, math.min(cursor.byte, len))
         return cursor
     end
@@ -1090,72 +1089,106 @@ local function Window(buf, rows, cols, y, x)
     return self
 end
 
-local function NullWindow(buf, rows, cols, y, x)
+local function NCursesUI()
     local self = {}
-    self.buf = buf
-    self.rows, self.cols, self.y, self.x = rows, cols, y, x
-    self.attr = nil
-    self.start_line = 0
-    self.row = 0
 
-    function self.clear()
-        self.row = 0
-    end
-    function self.end_row()
-        io.stdout:write('\n')
-    end
-    function self.refresh() end
+    -- ncurses setup
+    local stdscr = nc.initscr()
+    nc.scrollok(stdscr, true)
+    nc.raw()
+    nc.noecho()
+    nc.nonl()
+    nc.start_color()
+    -- HACK: #defines aren't available, use -1
+    nc.mousemask(ffi.cast('int', -1), nil)
+    self.rows = nc.LINES - 1
+    self.cols = nc.COLS
+    self.windows = {}
 
-    function self.write_at(row, col, attr, s, len)
-        if row ~= self.row then
-            io.stdout:write('\n')
-            self.row = row
+    -- Initialize attributes
+    local attr_value = {}
+    for k, idx in pairs(ATTR_ID) do
+        local fg, bg, ext = unpack(ATTR_INFO[k])
+        nc.init_pair(idx, fg, bg)
+        -- HACK: hardcoded bit offsets, since we don't have the #defines here
+        local attr = bit.lshift(idx, 8)
+        if ext == 'bold' then
+            attr = attr + bit.lshift(1, 8+13)
+        elseif ext == 'inv' then
+            attr = attr + bit.lshift(1, 8+10)
         end
-        if attr ~= self.attr then
-            local fg, bg, ext = unpack(HL_ATTRS[attr])
-            io.stdout:write(('\027[38;5;%dm\027[48;5;%dm'):format(fg, bg))
-            if ext == 'bold' then
-                io.stdout:write('\027[1m')
-            elseif ext == 'inv' then
-                io.stdout:write('\027[7m')
+        attr_value[idx] = attr
+    end
+
+    -- Sort of weird UI: insert a window at the given index, so window IDs match
+    function self.add_window(idx, window, rows, cols, y, x)
+        self.windows[idx] = {
+            rows=rows, cols=cols, y=y, x=x,
+            window=window,
+            nc_win=nc.newwin(rows, cols, y, x),
+        }
+    end
+
+    -- Kind of a hack: make a separate window just for the modeline
+    self.mode_window = module.Window(nil, 1, self.cols)
+    self.add_window('mode', self.mode_window, 1, self.cols, self.rows, 0)
+
+    -- Draw screen
+    function self.draw(cur_win, current_mode)
+        for win_idx, window in pairs(self.windows) do
+            local win = window.window
+            local nc_win = window.nc_win
+
+            -- meh
+            if win == self.mode_window then
+                draw_mode_line(win, current_mode)
+            else
+                -- XXX actually track dirty status
+                module.draw_lines(win, win_idx == cur_win)
             end
-            self.attr = attr
+
+            nc.werase(nc_win)
+
+            -- Draw the grid
+            for r = 0, win.rows - 1 do
+                local cur_attr = nil
+                for c = 0, win.cols - 1 do
+                    local attr = win.grid[r][c].attr
+                    if attr > 0 and attr ~= cur_attr then
+                        nc.wattrset(nc_win, attr_value[attr])
+                        cur_attr = attr
+                    end
+
+                    nc.mvwaddch(nc_win, r, c, win.grid[r][c].ch)
+                end
+            end
+            if win_idx == cur_win and win.curs_row and win.curs_col then
+                nc.wmove(nc_win, win.curs_row, win.curs_col + LINE_NB_WIDTH)
+            end
+            nc.wrefresh(nc_win)
         end
-        io.stdout:write(s)
+        -- Refresh the current window again, to make sure the cursor is
+        -- in the right place
+        nc.wrefresh(self.windows[cur_win].nc_win)
     end
 
-    function self.handle_scroll(action)
-        local scroll = get_scroll_amount(action, self)
-        self.start_line = self.start_line + scroll
-        self.start_line = math.min(self.start_line, buf.tree.root.nl_count - 1)
-        self.start_line = math.max(self.start_line, 0)
+    function self.find_window_target(row, col)
+        for i, window in ipairs(self.windows) do
+            if row >= window.y and row < window.y + window.rows and
+                col >= window.x and col < window.x + window.cols then
+                return i, window.window
+            end
+        end
     end
 
+    function self.stop()
+        nc.endwin()
+    end
     return self
 end
 
-local function run_tui(paths, debug, dumb_tui)
-    local Window = Window
+local function run_ui(ui, paths, debug)
     local rows, cols
-    if dumb_tui then
-        -- Fake lines/cols information
-        rows = 25 - 1
-        cols = 80
-        Window = NullWindow
-    else
-        -- ncurses setup
-        local stdscr = nc.initscr()
-        nc.scrollok(stdscr, true)
-        nc.raw()
-        nc.noecho()
-        nc.nonl()
-        nc.start_color()
-        -- HACK: #defines aren't available, use -1
-        nc.mousemask(ffi.cast('int', -1), nil)
-        rows = nc.LINES - 1
-        cols = nc.COLS
-    end
-    init_color()
 
     -- Set up highlighting
     local ts_ctx = TSContext()
@@ -1177,25 +1210,16 @@ local function run_tui(paths, debug, dumb_tui)
     local windows = {}
     local first = 0
     for i = 1, #buffers do
-        local last = math.floor(rows * i / #buffers)
-        windows[#windows + 1] = Window(buffers[i], last - first,
-                cols, first, 0)
+        local last = math.floor(ui.rows * i / #buffers)
+        local rows, cols = last - first, ui.cols
+        local window = module.Window(buffers[i], rows, cols)
+        local idx = #windows + 1
+        windows[idx] = window
+        ui.add_window(idx, window, rows, cols, first, 0)
         first = last
     end
     local cur_win = 1
     local window = windows[cur_win]
-
-    -- Kind of a hack: make a separate window just for the modeline
-    local mode_window = Window(nil, 1, cols, rows, 0)
-
-    local function find_window_target(row, col)
-        for i, window in ipairs(windows) do
-            if row >= window.y and row < window.y + window.rows and
-                col >= window.x and col < window.x + window.cols then
-                return i, window
-            end
-        end
-    end
 
     local current_mode = NORMAL_MODE
     -- Action and count for operator pending mode
@@ -1243,14 +1267,6 @@ local function run_tui(paths, debug, dumb_tui)
         return NORMAL_MODE
     end
 
-    -- Draw all windows
-    -- XXX actually track dirty status
-    function draw_all()
-        for i = 1, #windows do
-            draw_lines(windows[i], i == cur_win)
-        end
-    end
-
     local input_handler = InputHandler()
     -- Input buffer
     local buf_size = 64
@@ -1262,12 +1278,7 @@ local function run_tui(paths, debug, dumb_tui)
     while true do
         -- Only draw the screen if we've processed the whole input buffer
         if n_used >= n_read then
-            -- Draw screen
-            draw_mode_line(mode_window, current_mode)
-            draw_all()
-            -- Also, refresh the current window again, to make sure the cursor is
-            -- in the right place
-            window.refresh()
+            ui.draw(cur_win, current_mode)
         end
 
         -- Handle input
@@ -1303,13 +1314,13 @@ local function run_tui(paths, debug, dumb_tui)
             cur_win = (cur_win + offset - 1) % #windows + 1
             window = windows[cur_win]
         elseif action == MOUSE_DOWN then
-            local i, target = find_window_target(unpack(data))
+            local i, target = ui.find_window_target(unpack(data))
             if i ~= nil then
                 cur_win, window = i, target
             end
         elseif action_is_scroll(action) then
             if data then
-                local _, target = find_window_target(unpack(data))
+                local _, target = ui.find_window_target(unpack(data))
                 if target then
                     target.handle_scroll(action)
                 end
@@ -1418,9 +1429,11 @@ function module.main(args)
         error('no files')
     end
 
+    local ui = NCursesUI()
+
     -- Run the TUI, catching and printing any errors
-    local res = {xpcall(run_tui, debug.traceback, args, debug_tree)}
-    nc.endwin()
+    local res = {xpcall(run_ui, debug.traceback, ui, args, debug_tree)}
+    ui.stop()
     print(unpack(res))
 end
 
