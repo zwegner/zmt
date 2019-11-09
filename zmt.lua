@@ -36,18 +36,18 @@ local nc = zmt
 -- Editor definitions
 
 -- Modes
-local NORMAL_MODE, INSERT_MODE, VISUAL_CHAR_MODE, VISUAL_LINE_MODE,
-        OPERATOR_MODE, check = enum(50)
-assert(check ~= nil)
+local MODE = new_enum('MODE', 'NORMAL INSERT VISUAL_CHAR VISUAL_LINE OPERATOR')
+
 local MODE_STR = {
-    [NORMAL_MODE] = '',
-    [INSERT_MODE] = '-- INSERT --',
-    [VISUAL_CHAR_MODE] = '-- VISUAL --',
-    [VISUAL_LINE_MODE] = '-- VISUAL LINE --',
+    [MODE.NORMAL] = '',
+    [MODE.INSERT] = '-- INSERT --',
+    [MODE.VISUAL_CHAR] = '-- VISUAL --',
+    [MODE.VISUAL_LINE] = '-- VISUAL LINE --',
+    [MODE.OPERATOR] = '-- OPERATOR --',
 }
 
 local function mode_is_visual(mode)
-    return (mode == VISUAL_CHAR_MODE or mode == VISUAL_LINE_MODE)
+    return (mode == MODE.VISUAL_CHAR or mode == MODE.VISUAL_LINE)
 end
 
 -- Action enum
@@ -695,7 +695,7 @@ local OPERATOR_TABLE = {
 }
 
 local INPUT_TABLES = {
-    [NORMAL_MODE] = {
+    [MODE.NORMAL] = {
         ['QQ']              = QUIT,
 
         ['i']               = ENTER_INSERT,
@@ -710,21 +710,21 @@ local INPUT_TABLES = {
         [CTRL('N')]         = WINDOW_NEXT,
         [CTRL('P')]         = WINDOW_PREV,
     },
-    [INSERT_MODE] = {
+    [MODE.INSERT] = {
         ['\027']            = EXIT_INSERT,
         ['.']               = handle_insert_char,
     },
-    [VISUAL_CHAR_MODE] = {
+    [MODE.VISUAL_CHAR] = {
         ['\027']            = EXIT_VISUAL,
         ['v']               = EXIT_VISUAL,
         ['V']               = ENTER_VISUAL_LINE,
     },
-    [VISUAL_LINE_MODE] = {
+    [MODE.VISUAL_LINE] = {
         ['\027']            = EXIT_VISUAL,
         ['v']               = ENTER_VISUAL_CHAR,
         ['V']               = EXIT_VISUAL,
     },
-    [OPERATOR_MODE] = {
+    [MODE.OPERATOR] = {
         ['.']               = EXIT_OPERATOR,
     },
 }
@@ -765,8 +765,8 @@ end
 -- Post-processing: add operators and motions
 local op_tree = parse_input_table(OPERATOR_TABLE)
 local motion_tree = parse_input_table(MOTION_TABLE)
-for _, mode in ipairs{NORMAL_MODE, VISUAL_CHAR_MODE, VISUAL_LINE_MODE,
-        OPERATOR_MODE} do
+for _, mode in ipairs{MODE.NORMAL, MODE.VISUAL_CHAR, MODE.VISUAL_LINE,
+        MODE.OPERATOR} do
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], op_tree)
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], motion_tree)
 end
@@ -783,7 +783,7 @@ local function InputHandler()
         -- Store all current input sequence matches
         matches = {}
         -- HACK
-        enable_count = (mode == NORMAL_MODE or mode == OPERATOR_MODE or
+        enable_count = (mode == MODE.NORMAL or mode == MODE.OPERATOR or
                 mode_is_visual(mode))
         done_count = false
         count = nil
@@ -1097,7 +1097,7 @@ function module.Window(buf, rows, cols)
             start, stop = stop, start
         end
         -- Update for line-wise visual
-        if self.visual_mode == VISUAL_LINE_MODE then
+        if self.visual_mode == MODE.VISUAL_LINE then
             start.byte = 0
             stop.byte = self.buf.get_line_len(stop.line) - 2
         end
@@ -1243,7 +1243,7 @@ local function run_ui(ui, paths, debug)
     local cur_win = 1
     local window = windows[cur_win]
 
-    local current_mode = NORMAL_MODE
+    local current_mode = MODE.NORMAL
     -- Action and count for operator pending mode
     local op_action, op_count = nil, nil
 
@@ -1284,9 +1284,9 @@ local function run_ui(ui, paths, debug)
         if action == OP_CHANGE then
             window.buf.tree = zmt.split_at_offset(window.buf.tree,
                     window.cursor.line, window.cursor.byte)
-            return INSERT_MODE
+            return MODE.INSERT
         end
-        return NORMAL_MODE
+        return MODE.NORMAL
     end
 
     local input_handler = InputHandler()
@@ -1319,11 +1319,11 @@ local function run_ui(ui, paths, debug)
         end
 
         -- Clear out any pending operator
-        if current_mode ~= OPERATOR_MODE then
+        if current_mode ~= MODE.OPERATOR then
             op_action, op_count = nil, nil
         elseif action_is_operator(action) and op_action ~= action then
             op_action, op_count = nil, nil
-            current_mode = NORMAL_MODE
+            current_mode = MODE.NORMAL
         end
 
         ------------------------------------------------------------------------
@@ -1368,16 +1368,16 @@ local function run_ui(ui, paths, debug)
         ------------------------------------------------------------------------
         -- Normal mode ---------------------------------------------------------
         ------------------------------------------------------------------------
-        elseif current_mode == NORMAL_MODE and action_is_operator(action) then
+        elseif current_mode == MODE.NORMAL and action_is_operator(action) then
             op_action, op_count = action, count
-            current_mode = OPERATOR_MODE
+            current_mode = MODE.OPERATOR
 
         ------------------------------------------------------------------------
         -- Operator mode -------------------------------------------------------
         ------------------------------------------------------------------------
 
         -- Handle double operators: cc, dd, etc.
-        elseif current_mode == OPERATOR_MODE and action_is_operator(action) then
+        elseif current_mode == MODE.OPERATOR and action_is_operator(action) then
             assert(action == op_action)
             -- Multiply counts unless both are nil, then pass 1 (unlike default
             -- counts for motions, which pass nil)
@@ -1392,14 +1392,14 @@ local function run_ui(ui, paths, debug)
         -- Insert Mode ---------------------------------------------------------
         ------------------------------------------------------------------------
         elseif action == ENTER_INSERT then
-            current_mode = INSERT_MODE
+            current_mode = MODE.INSERT
             -- Split the tree at the cursor offset
             window.buf.tree = zmt.split_at_offset(window.buf.tree,
                     window.cursor.line, window.cursor.byte)
         elseif action == EXIT_INSERT then
-            current_mode = NORMAL_MODE
+            current_mode = MODE.NORMAL
         elseif action == INSERT_CHAR then
-            assert(current_mode == INSERT_MODE)
+            assert(current_mode == MODE.INSERT)
 
             local char = string.char(data)
 
@@ -1416,8 +1416,8 @@ local function run_ui(ui, paths, debug)
         -- Visual Mode ---------------------------------------------------------
         ------------------------------------------------------------------------
         elseif action == ENTER_VISUAL_CHAR or action == ENTER_VISUAL_LINE then
-            local next_mode = (action == ENTER_VISUAL_CHAR) and VISUAL_CHAR_MODE
-                    or VISUAL_LINE_MODE
+            local next_mode = (action == ENTER_VISUAL_CHAR) and MODE.VISUAL_CHAR
+                    or MODE.VISUAL_LINE
             if mode_is_visual(current_mode) then
                 window.update_visual(next_mode, window.cursor)
             else
@@ -1425,10 +1425,10 @@ local function run_ui(ui, paths, debug)
             end
             current_mode = next_mode
         elseif action == EXIT_VISUAL then
-            current_mode = NORMAL_MODE
+            current_mode = MODE.NORMAL
             window.end_visual()
         elseif mode_is_visual(current_mode) and action_is_operator(action) then
-            mtype = (current_mode == VISUAL_CHAR_MODE) and M_CHARWISE or
+            mtype = (current_mode == MODE.VISUAL_CHAR) and M_CHARWISE or
                     M_LINEWISE
             local start, stop = window.get_visual_range()
             current_mode = operate(window, start, stop, action, mtype, M_EXC)

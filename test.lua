@@ -132,10 +132,26 @@ local TESTS = {
         assert_eq({{1}, {1, 2}}, {{1}, {1, 2}})
         assert_neq({{1}, {1, 2}}, {{1}, {1, 2, 3}})
 
+        test_name('strip')
+        assert_eq(strip(' \t\na \t\n b \t\n'), 'a \t\n b')
+
         test_name('split')
         assert_eq(split('a\nb\nc', '\n'), {'a', 'b', 'c'})
         assert_eq(split('\nabc\n', '\n'), {'', 'abc', ''})
         assert_eq(split('\n\n\nabc\n\n\n', '\n+'), {'', 'abc', ''})
+
+        test_name('enum')
+        local e = new_enum('E', 'a, b, c\nd,\ne')
+        assert_eq(#e, 5)
+        assert_eq(str(e.a), 'E.a')
+        assert_eq(astr(e), '{E.a, E.b, E.c, E.d, E.e}')
+        assert_eq(e.a, e.a, 'values are equal')
+        assert_neq(e.a, e.b, 'values are distinct')
+        local e2 = new_enum('E2', 'a')
+        assert_neq(e.a, e2.a, 'values are distinct')
+        local e_table = {[e.a]=1, [e.b]=2}
+        assert_eq(e_table[e.a], 1, 'values are hashable')
+        assert_eq(e_table[e.b], 2, 'values are hashable')
     end},
 
     {'tree 1', function ()

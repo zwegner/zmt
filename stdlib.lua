@@ -25,6 +25,24 @@ function enum(stop)
     return unpack(range(1, stop, 1))
 end
 
+function new_enum(name, values)
+    local container = {names = {}}
+    local meta = {
+        __tostring = function (v)
+            return ('%s.%s'):format(name, container.names[v.idx])
+        end
+    }
+    for idx, value in ipairs(split(values, ',?[ \t\n]+')) do
+        local e_value = {idx=idx}
+        setmetatable(e_value, meta)
+        assert(not container[value])
+        container[value] = e_value
+        container[idx] = e_value
+        container.names[idx] = value
+    end
+    return container
+end
+
 function iter_unpack(table)
     return coroutine.wrap(function()
         for i, item in pairs(table) do
@@ -35,6 +53,10 @@ end
 
 function iter_bytes(str)
     return ipairs{str:byte(1, -1)}
+end
+
+function strip(s)
+    return s:gsub('^[ \t\n]+', ''):gsub('[ \t\n]+$', '')
 end
 
 function split(s, pattern)
@@ -52,7 +74,8 @@ function split(s, pattern)
 end
 
 function str(value)
-    if type(value) == 'table' then
+    local meta = getmetatable(value)
+    if type(value) == 'table' and (not meta or not meta['__tostring']) then
         local s = ''
         for k, v in pairs(value) do
             s = s .. ('[%s] = %s, '):format(str(k), str(v))
@@ -114,7 +137,10 @@ end
 -- Nested equality comparison. Ignores metatables. Returns a table {false, msg}
 -- if not equal, or nil otherwise, mostly for an easy interface
 local function equals(a, b, path)
-    if type(a) == 'table' and type(b) == 'table' then
+    local meta_a, meta_b  = getmetatable(a), getmetatable(b)
+    if type(a) == 'table' and type(b) == 'table' and
+           (not meta_a or not meta_a['__tostring'] or
+           not meta_b or not meta_b ['__tostring']) then
         local seen_keys = {}
         for k, v1 in pairs(a) do
             seen_keys[k] = true
