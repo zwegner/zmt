@@ -459,6 +459,9 @@ end
 
 local function draw_number_column(window, row, line, wrap, skip)
     local line_nb_str
+    if not window.show_line_numbers then
+        return 0
+    end
     if wrap then
         line_nb_str = (' '):rep(LINE_NB_WIDTH)
     else
@@ -468,6 +471,7 @@ local function draw_number_column(window, row, line, wrap, skip)
         end
     end
     window.write_at(row, 0, ATTR_ID['line_nb'], line_nb_str, LINE_NB_WIDTH)
+    return LINE_NB_WIDTH
 end
 
 local function draw_status_line(window, is_focused)
@@ -489,8 +493,7 @@ function module.draw_lines(window, is_focused)
     window.clear()
 
     -- Render event handling
-    local event_ctx = EventContext(window, buf.query,
-            window.cols - LINE_NB_WIDTH)
+    local event_ctx = EventContext(window, buf.query, window.inner_width())
     -- The current render event we're waiting for
     local event_offset, event_type, event_hl = -1, nil, nil
     -- A stack of highlights, so highlights can nest
@@ -536,11 +539,10 @@ function module.draw_lines(window, is_focused)
         -- character of a line
         elseif event_type == EV.WRAP and (not is_end or #piece > 0) then
             row = row + 1
-            col = LINE_NB_WIDTH
-            draw_number_column(window, row, line, true, false)
+            col = draw_number_column(window, row, line, true, false)
         -- Mark cursor
         elseif event_type == EV.CURSOR then
-            window.mark_cursor(row, col - LINE_NB_WIDTH)
+            window.mark_cursor(row, col)
         end
         next_event()
     end
@@ -570,8 +572,7 @@ function module.draw_lines(window, is_focused)
                 skip = window.start_byte > 0
             end
 
-            draw_number_column(window, row, line, false, skip)
-            col = LINE_NB_WIDTH
+            col = draw_number_column(window, row, line, false, skip)
             last_line = line
 
             -- HACK: add a space on empty lines
@@ -955,10 +956,12 @@ function module.Window(buf, rows, cols)
     self.rows, self.cols = rows, cols
     self.cursor = Pos(0, 0)
     self.curs_row, self.curs_col = 0, 0
-    self.attr = nil
     self.start_line, self.start_byte = 0, 0
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
+
+    self.show_line_numbers = true
+
     -- XXX multibyte
     ffi.cdef([[
         typedef struct {
@@ -986,11 +989,12 @@ function module.Window(buf, rows, cols)
         end
     end
 
-    function self.refresh()
-        if self.curs_row and self.curs_col then
-            nc.wmove(self.win, self.curs_row, self.curs_col + LINE_NB_WIDTH)
-        end
-        nc.wrefresh(self.win)
+    function self.left_margin()
+        return self.show_line_numbers and LINE_NB_WIDTH or 0
+    end
+
+    function self.inner_width()
+        return self.cols - self.left_margin()
     end
 
     function self.get_motion_props(count, action)
@@ -1013,7 +1017,7 @@ function module.Window(buf, rows, cols)
     end
 
     function self.mark_cursor(row, col)
-        self.curs_row, self.curs_col = row, col
+        self.curs_row, self.curs_col = row, col - self.left_margin()
     end
 
     function self.write_at(row, col, attr, str, len)
@@ -1040,7 +1044,7 @@ function module.Window(buf, rows, cols)
 
     function self.handle_scroll(action)
         local scroll = get_scroll_amount(action, self)
-        local width = self.cols - LINE_NB_WIDTH
+        local width = self.inner_width()
         -- Scroll down
         if scroll > 0 then
             local len = self.buf.get_line_len(self.start_line) - 1
@@ -1182,7 +1186,7 @@ local function NCursesUI()
                 end
             end
             if win_idx == cur_win and win.curs_row and win.curs_col then
-                nc.wmove(nc_win, win.curs_row, win.curs_col + LINE_NB_WIDTH)
+                nc.wmove(nc_win, win.curs_row, win.curs_col + win.left_margin())
             end
             nc.wrefresh(nc_win)
         end
