@@ -137,9 +137,8 @@ end
 -- Read input until we parse a command
 local function InputHandler()
     local self = {}
-    local matches = nil
+    local matches = {}
     local enable_count, done_count, count = nil, nil, nil
-    local input, action, data = nil, nil, nil
 
     function self.reset(mode)
         input_tree = INPUT_TREES[mode]
@@ -150,10 +149,13 @@ local function InputHandler()
                 ed.mode_is_visual(mode))
         done_count = false
         count = nil
-        input, action, data = nil, nil, nil
     end
 
+    function self.matches() return matches end
+
     function self.feed(c)
+        local input, action, data = nil, nil, nil
+
         -- Parse count
         if enable_count and not done_count then
             if count == nil and byte_in_range(c, '1', '9') then
@@ -192,13 +194,15 @@ local function InputHandler()
 
         -- Also check for starting a new match. We do this only after
         -- advancing previous matches so we don't advance this one again
-        local lookup = input_tree[c] or input_tree[0]
-        if type(lookup) == 'table' and lookup.enum ~= ACT then
-            -- New match
-            matches[#matches + 1] = {{c}, lookup}
-        elseif lookup ~= nil then
-            -- Immediate match
-            input, action = {c}, lookup
+        if action == nil then
+            local lookup = input_tree[c] or input_tree[0]
+            if type(lookup) == 'table' and lookup.enum ~= ACT then
+                -- New match
+                matches[#matches + 1] = {{c}, lookup}
+            elseif lookup ~= nil and #matches == 0 then
+                -- Immediate match
+                input, action = {c}, lookup
+            end
         end
 
         -- Check for a successful input match
