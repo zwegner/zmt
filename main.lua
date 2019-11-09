@@ -1,4 +1,4 @@
 #!/usr/bin/env luajit
-local zmt = require('zmt')
+local ui = require('ui')
 
-zmt.main(arg)
+ui.main(arg)

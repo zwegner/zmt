@@ -1,6 +1,9 @@
 #!/usr/bin/env luajit
 require('stdlib')
 local zmt = require('zmt')
+local ed = require('ed')
+local ui = require('ui')
+local ts = require('ts')
 
 -- Helpers
 
@@ -37,12 +40,12 @@ end
 -- expected pieces/lines with the actual values too.
 local function check_tree(tree, exp_pieces, exp_lines)
     -- Verify metadata is correct
-    zmt.zmt.verify_node(tree.root)
+    zmt.lib.verify_node(tree.root)
 
     local pieces = piece_list(tree)
     local lines = line_list(tree)
 
-    local tree_size = zmt.zmt.get_tree_total_size(tree)
+    local tree_size = zmt.lib.get_tree_total_size(tree)
 
     -- Verify we got the expected pieces/lines
     assert_eq(pieces, exp_pieces, 'pieces match')
@@ -68,24 +71,26 @@ local function check_tree(tree, exp_pieces, exp_lines)
 
     -- Verify that all the line lengths are correct
     for i, line in ipairs(lines) do
-        assert_eq(zmt.zmt.get_tree_line_length(tree, i - 1), #line,
+        assert_eq(zmt.lib.get_tree_line_length(tree, i - 1), #line,
             ('length of line %s matches'):format(i))
     end
 end
 
 local function tree_insert_bytes(tree, offset, data)
-    return zmt.zmt.insert_bytes_at_offset(tree, 0, offset, data, #data)
+    return zmt.lib.insert_bytes_at_offset(tree, 0, offset, data, #data)
 end
 
 local function create_fake_buffer(name, data, piece_size)
-    local chunk = zmt.zmt.write_new_chunk(data, #data)
-    local tree = zmt.zmt.dumb_read_data(chunk, piece_size)
-    return zmt.Buffer(name, tree)
+    local chunk = zmt.lib.write_new_chunk(data, #data)
+    local tree = zmt.lib.dumb_read_data(chunk, piece_size)
+    local buf = zmt.Buffer(name, tree)
+    buf.query = ts.TS_NULL_QUERY
+    return buf
 end
 
 local function check_grid(name, win, expected_grid, check_attrs)
     test_name(name)
-    zmt.draw_lines(win, true)
+    ui.draw_lines(win, true)
     -- Create a friendly string-based representation of the screen grid
     local act_grid = {}
     local cur_attr = 'default'
@@ -94,7 +99,7 @@ local function check_grid(name, win, expected_grid, check_attrs)
         local line = ''
         for c = 0, win.cols - 1 do
             -- Deal with attributes
-            local attr = zmt.ATTR_NAME[win.grid[r][c].attr]
+            local attr = ui.ATTR_NAME[win.grid[r][c].attr]
             if check_attrs and attr ~= cur_attr then
                 if cur_attr ~= 'default' then
                     line = line .. '}'
@@ -181,7 +186,7 @@ local TESTS = {
 
     {'tree 1', function ()
         test_name('basic tree 1')
-        local tree = zmt.zmt.create_tree(true)
+        local tree = zmt.lib.create_tree(true)
         check_tree(tree, {}, {''})
 
         -- XXX leaves a node with no bytes
@@ -209,14 +214,14 @@ local TESTS = {
         -- Verify zero-width fillers are patched properly
         for i = 0, 2 do
             test_name('basic tree 7+'..i)
-            tree = zmt.zmt.split_at_offset(tree, 0, i)
+            tree = zmt.lib.split_at_offset(tree, 0, i)
             check_tree(tree, {'a', 'c', '\nb'}, {'ac\n', 'b'})
         end
     end},
 
     {'tree 2', function ()
         test_name('setup')
-        local tree = zmt.zmt.create_tree(true)
+        local tree = zmt.lib.create_tree(true)
 
         local piece = '0123456789\n'
         for i = 1, 10 do
@@ -245,8 +250,8 @@ local TESTS = {
         test_name('setup')
         -- Create a tree with 4x 4-byte nodes
         local data = '0123456789abcdef'
-        local chunk = zmt.zmt.write_new_chunk(data, #data)
-        local tree = zmt.zmt.dumb_read_data(chunk, 4)
+        local chunk = zmt.lib.write_new_chunk(data, #data)
+        local tree = zmt.lib.dumb_read_data(chunk, 4)
         check_tree(tree, {'0123', '4567', '89ab', 'cdef'}, {data})
 
         -- Some of these fail now
@@ -258,7 +263,7 @@ local TESTS = {
             -- Split the tree at the given offset
             local tree = tree
             if split_offset >= 0 then
-                tree = zmt.zmt.split_at_offset(tree, 0, split_offset)
+                tree = zmt.lib.split_at_offset(tree, 0, split_offset)
             end
 
             -- Loop through multiple permutations of starting/stopping on a node
@@ -287,7 +292,7 @@ local TESTS = {
                     local new_line = data:sub(1, start) .. data:sub(stop+1)
 
                     -- Delete the range and check the output
-                    local td = zmt.zmt.delete_byte_range(tree, start, stop)
+                    local td = zmt.lib.delete_byte_range(tree, start, stop)
                     check_tree(td, pieces, {new_line})
                 end
             end
@@ -297,7 +302,7 @@ local TESTS = {
     {'line wrapping', function ()
         local data = ('012345678901234567890123456789\n'):rep(10)
         local buf = create_fake_buffer('[test]', data, 4)
-        local win = zmt.Window(buf, 10, 20)
+        local win = ui.Window(buf, 10, 20)
 
         check_grid('lines wrap properly 1', win, [[
             |   1 ^012345678901234|
@@ -329,11 +334,11 @@ local TESTS = {
     {'visual mode', function ()
         local data = ('0123456789\n'):rep(3) .. '\n\n'
         local buf = create_fake_buffer('[test]', data, 8)
-        local win = zmt.Window(buf, 4, 20)
+        local win = ui.Window(buf, 4, 20)
 
         win.show_line_numbers = false
-        win.start_visual(zmt.MODE.VISUAL_CHAR, zmt.Pos(0, 0))
-        win.update_visual(zmt.MODE.VISUAL_CHAR, zmt.Pos(2, 0))
+        win.start_visual(ed.MODE.VISUAL_CHAR, ed.Pos(0, 0))
+        win.update_visual(ed.MODE.VISUAL_CHAR, ed.Pos(2, 0))
 
         check_grid('visual mode works', win, [[
             |{visual:^0123456789}          |
@@ -342,7 +347,7 @@ local TESTS = {
             |{status:[test]              }|
         ]], true)
 
-        win.buf.tree = zmt.zmt.delete_byte_range(win.buf.tree, 11, 21)
+        win.buf.tree = zmt.lib.delete_byte_range(win.buf.tree, 11, 21)
 
         check_grid('visual mode works on empty lines', win, [[
             |{visual:^0123456789}          |

@@ -142,8 +142,8 @@ function rep(v, n)
     return result
 end
 
--- Nested equality comparison. Ignores metatables. Returns a table {false, msg}
--- if not equal, or nil otherwise, mostly for an easy interface
+-- Nested equality comparison. Returns a table {false, msg} if not equal,
+-- or nil otherwise, mostly for an easy interface
 local function equals(a, b, path)
     local meta_a, meta_b  = getmetatable(a), getmetatable(b)
     if type(a) == 'table' and type(b) == 'table' and
