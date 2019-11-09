@@ -37,6 +37,7 @@ local nc = zmt
 
 -- Modes
 local MODE = enum('MODE', 'NORMAL INSERT VISUAL_CHAR VISUAL_LINE OPERATOR')
+module.MODE = MODE
 
 local MODE_STR = {
     [MODE.NORMAL] = '',
@@ -97,9 +98,11 @@ local ATTR_INFO = {
     ['mode_line']           = {15,   0, 'bold'},
 }
 local ATTR_ID = {}
+module.ATTR_NAME = {}
 local idx = 1
 for k, v in pairs(ATTR_INFO) do
     ATTR_ID[k] = idx
+    module.ATTR_NAME[idx] = k
     idx = idx + 1
 end
 
@@ -127,6 +130,7 @@ local function Pos(line, byte)
     end
     return self
 end
+module.Pos = Pos
 
 --------------------------------------------------------------------------------
 -- Main meta-tree interface ----------------------------------------------------
@@ -172,13 +176,17 @@ function module.iter_lines(tree, start_line, start_byte)
                 assert(idx ~= nil)
                 local part = piece:sub(1, idx)
                 piece = piece:sub(idx + 1)
-                coroutine.yield(line, offset, true, part)
+                if #part > 0 then
+                    coroutine.yield(line, offset, true, part)
+                end
                 offset = offset + idx
                 line = line + 1
             end
 
             -- Yield the last part of this piece
-            coroutine.yield(line, offset, false, piece)
+            if #piece > 0 then
+                coroutine.yield(line, offset, false, piece)
+            end
         end
     end)
 end
@@ -580,9 +588,8 @@ function module.draw_lines(window, is_focused)
                 piece = ' '
             end
         end
-
         -- HACK: trim off final newline
-        if is_end and piece:sub(-1,-1) == '\n' then
+        if is_end and piece:sub(-1, -1) == '\n' then
             piece = piece:sub(1, -2)
         end
 

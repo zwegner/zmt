@@ -83,27 +83,52 @@ local function create_fake_buffer(name, data, piece_size)
     return zmt.Buffer(name, tree)
 end
 
-local function check_grid(name, win, expected_grid)
+local function check_grid(name, win, expected_grid, check_attrs)
     test_name(name)
     zmt.draw_lines(win, true)
     -- Create a friendly string-based representation of the screen grid
     local act_grid = {}
+    local cur_attr = 'default'
+    local curs_row, curs_col = win.curs_row, win.curs_col + win.left_margin()
     for r = 0, win.rows - 1 do
         local line = ''
         for c = 0, win.cols - 1 do
+            -- Deal with attributes
+            local attr = zmt.ATTR_NAME[win.grid[r][c].attr]
+            if check_attrs and attr ~= cur_attr then
+                if cur_attr ~= 'default' then
+                    line = line .. '}'
+                end
+                cur_attr = attr
+                if attr ~= 'default' then
+                    line = line .. '{' .. attr .. ':'
+                end
+            end
+            -- Deal with cursor
+            if r == curs_row and c == curs_col then
+                line = line .. '^'
+            end
+
             line = line .. string.char(win.grid[r][c].ch)
+        end
+        -- Finish any attributes on the last row
+        if r == win.rows - 1 and check_attrs and cur_attr ~= 'default' then
+            line = line .. '}'
         end
         act_grid[#act_grid + 1] = line
     end
 
     -- Parse the expected grid
     local exp_grid = split(expected_grid, '\n')
-    exp_grid = amap(exp_grid, function (row) return row:match('^ +|(.*)|$') end)
+    exp_grid = amap(exp_grid, function (row)
+        return row:match('^ +|(.*)|$')
+    end)
 
     local function print_grids()
         local exp_width = math.max(unpack(amap(exp_grid,
-                function(row) return #row end))) + 2
-        local act_width = win.cols + 2
+                function(row) return #row end))) + 3
+        local act_width = math.max(unpack(amap(act_grid,
+                function(row) return #row end))) + 3
         -- Work around for lua formatting not supporting %*s
         local fmt = '    %-'..act_width..'s   %-'..exp_width..'s%s\n'
         logf(fmt, 'Actual', 'Expected', '')
@@ -275,7 +300,7 @@ local TESTS = {
         local win = zmt.Window(buf, 10, 20)
 
         check_grid('lines wrap properly 1', win, [[
-            |   1 012345678901234|
+            |   1 ^012345678901234|
             |     567890123456789|
             |   2 012345678901234|
             |     567890123456789|
@@ -290,7 +315,7 @@ local TESTS = {
         win.rows, win.cols = 8, 12
 
         check_grid('lines wrap properly 2', win, [[
-            |   1 0123456|
+            |   1 ^0123456|
             |     7890123|
             |     4567890|
             |     1234567|
@@ -299,6 +324,32 @@ local TESTS = {
             |     7890123|
             |[test]      |
         ]])
+    end},
+
+    {'visual mode', function ()
+        local data = ('0123456789\n'):rep(3) .. '\n\n'
+        local buf = create_fake_buffer('[test]', data, 8)
+        local win = zmt.Window(buf, 4, 20)
+
+        win.show_line_numbers = false
+        win.start_visual(zmt.MODE.VISUAL_CHAR, zmt.Pos(0, 0))
+        win.update_visual(zmt.MODE.VISUAL_CHAR, zmt.Pos(2, 0))
+
+        check_grid('visual mode works', win, [[
+            |{visual:^0123456789}          |
+            |{visual:0123456789}          |
+            |{visual:0}123456789          |
+            |{status:[test]              }|
+        ]], true)
+
+        win.buf.tree = zmt.zmt.delete_byte_range(win.buf.tree, 11, 21)
+
+        check_grid('visual mode works on empty lines', win, [[
+            |{visual:^0123456789}          |
+            |{visual: }                   |
+            |{visual:0}123456789          |
+            |{status:[test]              }|
+        ]], true)
     end},
 }
 
