@@ -294,15 +294,12 @@ local function TSQuery(query, buf)
     return self
 end
 
--- TSNullQuery conforms to the TSQuery interface but doesn't return any
--- highlight events. Used for unknown syntax, etc.
-local function TSNullQuery()
-    local self = {}
-    function self.reset(offset) end
-    function self.next_capture() end
-    function self.current_capture() end
-    return self
-end
+-- TS_NULL_QUERY is a singleton that conforms to the TSQuery interface but
+-- doesn't return any highlight events. Used for unknown syntax, etc.
+local TS_NULL_QUERY = {}
+function TS_NULL_QUERY.reset(offset) end
+function TS_NULL_QUERY.next_capture() end
+function TS_NULL_QUERY.current_capture() end
 
 -- TSContext holds all global tree-sitter context
 local function TSContext()
@@ -338,7 +335,7 @@ local function TSContext()
         local parse, query = self.get_lang(ext)
 
         if not parse then
-            buf.query = TSNullQuery()
+            buf.query = TS_NULL_QUERY
         else
             -- XXX sticking stuff into buffer object--maybe not the best
             -- abstraction...?
@@ -868,7 +865,7 @@ function module.Buffer(path, tree)
     local self = {}
     self.path = path
     self.tree = tree
-    self.query = TSNullQuery()
+    self.query = TS_NULL_QUERY
 
     function self.get_line_count()
         return tonumber(zmt.get_tree_total_size(self.tree).line) + 1
@@ -894,7 +891,7 @@ end
 
 local function TreeDebugBuffer(buf)
     local self = {}
-    self.query = TSNullQuery()
+    self.query = TS_NULL_QUERY
     self.path = '[tree-debug]'
     self.lines = 0
 
