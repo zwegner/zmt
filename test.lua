@@ -141,13 +141,13 @@ local TESTS = {
         assert_eq(split('\n\n\nabc\n\n\n', '\n+'), {'', 'abc', ''})
 
         test_name('enum')
-        local e = new_enum('E', 'a, b, c\nd,\ne')
+        local e = enum('E', 'a, b, c\nd,\ne')
         assert_eq(#e, 5)
         assert_eq(str(e.a), 'E.a')
         assert_eq(astr(e), '{E.a, E.b, E.c, E.d, E.e}')
         assert_eq(e.a, e.a, 'values are equal')
         assert_neq(e.a, e.b, 'values are distinct')
-        local e2 = new_enum('E2', 'a')
+        local e2 = enum('E2', 'a')
         assert_neq(e.a, e2.a, 'values are distinct')
         local e_table = {[e.a]=1, [e.b]=2}
         assert_eq(e_table[e.a], 1, 'values are hashable')
@@ -273,7 +273,6 @@ local TESTS = {
         local data = ('012345678901234567890123456789\n'):rep(10)
         local buf = create_fake_buffer('[test]', data, 4)
         local win = zmt.Window(buf, 10, 20)
-
 
         check_grid('lines wrap properly 1', win, [[
             |   1 012345678901234|

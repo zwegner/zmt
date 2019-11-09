@@ -36,7 +36,7 @@ local nc = zmt
 -- Editor definitions
 
 -- Modes
-local MODE = new_enum('MODE', 'NORMAL INSERT VISUAL_CHAR VISUAL_LINE OPERATOR')
+local MODE = enum('MODE', 'NORMAL INSERT VISUAL_CHAR VISUAL_LINE OPERATOR')
 
 local MODE_STR = {
     [MODE.NORMAL] = '',
@@ -51,35 +51,31 @@ local function mode_is_visual(mode)
 end
 
 -- Action enum
-local
+local ACT = enum('ACT', [[
     -- Generic/mode switching commands
-    ENTER_INSERT, EXIT_INSERT, ENTER_VISUAL_CHAR, ENTER_VISUAL_LINE,
-    EXIT_VISUAL, QUIT,
+    ENTER_INSERT EXIT_INSERT ENTER_VISUAL_CHAR ENTER_VISUAL_LINE
+    EXIT_VISUAL QUIT
     -- Operators
-    _OP_MIN, OP_CHANGE, OP_DELETE, _OP_MAX,
+    OPERATOR:{ OP_CHANGE OP_DELETE }
     -- Motions
-    _MOTION_MIN, MOTION_UP, MOTION_DOWN, MOTION_LEFT, MOTION_RIGHT,
-    MOTION_HOME, MOTION_END, MOTION_FIRST, MOTION_LAST, MOTION_NL, _MOTION_MAX,
+    MOTION:{ MOTION_UP MOTION_DOWN MOTION_LEFT MOTION_RIGHT MOTION_HOME
+        MOTION_END MOTION_FIRST MOTION_LAST MOTION_NL }
     -- Insert mode
-    INSERT_CHAR,
+    INSERT_CHAR
     -- Scrolling
-    _SCROLL_MIN, SCROLL_UP, SCROLL_DOWN, SCROLL_HALFPAGE_UP,
-    SCROLL_HALFPAGE_DOWN, _SCROLL_MAX,
+    SCROLL:{ SCROLL_UP SCROLL_DOWN SCROLL_HALFPAGE_UP SCROLL_HALFPAGE_DOWN }
     -- Mouse events
-    MOUSE_DOWN,
+    MOUSE_DOWN
     -- Window movement
-    _WINDOW_SWITCH_MIN, WINDOW_NEXT, WINDOW_PREV, _WINDOW_SWITCH_MAX,
-    check = enum(100)
-assert(check ~= nil)
+    WINDOW_SWITCH:{ WINDOW_NEXT WINDOW_PREV }
+]])
 
 -- Motion properties
-local M_LINEWISE, M_CHARWISE, M_INC, M_EXC, check = enum(50)
-assert(check ~= nil)
+local MP = enum('MP', 'LINEWISE CHARWISE INC EXC')
 
--- Render event enum
-local EV_HL_BEGIN, EV_HL_END, EV_WRAP, EV_CURSOR, EV_EOF,
-        EV_VISUAL_BEGIN, EV_VISUAL_END, check = enum(50)
-assert(check ~= nil)
+-- Render events
+local EV = enum('EV', [[HL_BEGIN HL_END WRAP CURSOR EOF
+        VISUAL_BEGIN VISUAL_END]])
 
 -- Color codes for syntax highlighting. Each value is a (fg, bg) pair
 local ATTR_INFO = {
@@ -399,12 +395,12 @@ local function EventContext(window, query, width)
         if event_start >= event_end then
             local cap_name, cap_start, cap_end = query.current_capture()
             if cap_name == nil then
-                next_hl_event = {1e100, EV_EOF, nil}
+                next_hl_event = {1e100, EV.EOF, nil}
                 return
             end
 
-            event_buf = {{cap_start, EV_HL_BEGIN, cap_name},
-                    {cap_end, EV_HL_END, nil}}
+            event_buf = {{cap_start, EV.HL_BEGIN, cap_name},
+                    {cap_end, EV.HL_END, nil}}
 
             -- Fill in any nested captures that happen within this one
             while true do
@@ -413,8 +409,8 @@ local function EventContext(window, query, width)
                 if n == nil or s >= cap_end then
                     break
                 end
-                event_buf[#event_buf+1] = {s, EV_HL_BEGIN, n}
-                event_buf[#event_buf+1] = {e, EV_HL_END, nil}
+                event_buf[#event_buf+1] = {s, EV.HL_BEGIN, n}
+                event_buf[#event_buf+1] = {e, EV.HL_END, nil}
             end
             table.sort(event_buf, function(a, b) return a[1] < b[1] end)
             event_start, event_end = 0, #event_buf
@@ -430,11 +426,11 @@ local function EventContext(window, query, width)
     function self.current_event()
         -- Build a table of candidate events, and find the nearest one
         local events = {
-            {next_wrap_offset, EV_WRAP, nil},
-            {visual_start_off, EV_VISUAL_BEGIN, 'visual'},
-            {visual_end_off, EV_VISUAL_END, 'visual'},
-            {cursor_offset, EV_CURSOR, nil},
-            {next_wrap_offset, EV_WRAP, nil},
+            {next_wrap_offset, EV.WRAP, nil},
+            {visual_start_off, EV.VISUAL_BEGIN, 'visual'},
+            {visual_end_off, EV.VISUAL_END, 'visual'},
+            {cursor_offset, EV.CURSOR, nil},
+            {next_wrap_offset, EV.WRAP, nil},
         }
         local event = next_hl_event
         for _, e in ipairs(events) do
@@ -445,13 +441,13 @@ local function EventContext(window, query, width)
 
     -- Advance the event queue
     function self.next_event(event_type)
-        if event_type == EV_CURSOR then
+        if event_type == EV.CURSOR then
             cursor_offset = nil
-        elseif event_type == EV_VISUAL_BEGIN then
+        elseif event_type == EV.VISUAL_BEGIN then
             visual_start_off = nil
-        elseif event_type == EV_VISUAL_END then
+        elseif event_type == EV.VISUAL_END then
             visual_end_off = nil
-        elseif event_type == EV_WRAP then
+        elseif event_type == EV.WRAP then
             next_wrap_offset = next_wrap_offset + width
         else
             self.next_capture_event()
@@ -521,29 +517,29 @@ function module.draw_lines(window, is_focused)
     -- the start of the screen. This also advances the event iterator.
     local function handle_event(is_end, piece)
         -- Start highlight
-        if event_type == EV_HL_BEGIN then
+        if event_type == EV.HL_BEGIN then
             -- Push this highlight. Duplicate the top stack if this is
             -- an ignored capture, so we can still pop it off later
             cur_hl = ATTR_ID[event_hl] or hl_stack[#hl_stack]
             hl_stack[#hl_stack + 1] = cur_hl
         -- End highlight
-        elseif event_type == EV_HL_END then
+        elseif event_type == EV.HL_END then
             -- End of capture, pop the highlight stack
             assert(#hl_stack > 1)
             hl_stack[#hl_stack] = nil
             cur_hl = hl_stack[#hl_stack]
-        elseif event_type == EV_VISUAL_BEGIN then
+        elseif event_type == EV.VISUAL_BEGIN then
             visual_hl = ATTR_ID['visual']
-        elseif event_type == EV_VISUAL_END then
+        elseif event_type == EV.VISUAL_END then
             visual_hl = nil
         -- Line wrap. HACK: make sure to not wrap if this is the last
         -- character of a line
-        elseif event_type == EV_WRAP and (not is_end or #piece > 0) then
+        elseif event_type == EV.WRAP and (not is_end or #piece > 0) then
             row = row + 1
             col = LINE_NB_WIDTH
             draw_number_column(window, row, line, true, false)
         -- Mark cursor
-        elseif event_type == EV_CURSOR then
+        elseif event_type == EV.CURSOR then
             window.mark_cursor(row, col - LINE_NB_WIDTH)
         end
         next_event()
@@ -637,11 +633,11 @@ local function handle_mouse_input(buf)
     local col = buf[5] - 0x21
     local row = buf[6] - 0x21
     if code >= 0 and code <= 2 then
-        return MOUSE_DOWN, {row, col}
+        return ACT.MOUSE_DOWN, {row, col}
     elseif code == 64 then
-        return SCROLL_UP, {row, col}
+        return ACT.SCROLL_UP, {row, col}
     elseif code == 65 then
-        return SCROLL_DOWN, {row, col}
+        return ACT.SCROLL_DOWN, {row, col}
     end
 end
 
@@ -649,25 +645,26 @@ local function handle_insert_char(buf)
     assert(#buf == 1)
     -- Ignore all non-ASCII and control characters except \n
     if buf[1] >= 32 and buf[1] < 127 then
-        return INSERT_CHAR, buf[1]
+        return ACT.INSERT_CHAR, buf[1]
     elseif buf[1] == 13 then
-        return INSERT_CHAR, 10
+        return ACT.INSERT_CHAR, 10
     end
 end
 
 -- Input helper functions
 
 local function action_is_operator(action)
-    return action >= _OP_MIN and action <= _OP_MAX
+    return action.group == 'OPERATOR'
 end
+
 local function action_is_scroll(action)
-    return action >= _SCROLL_MIN and action <= _SCROLL_MAX
+    return action.group == 'SCROLL'
 end
 local function action_is_motion(action)
-    return action >= _MOTION_MIN and action <= _MOTION_MAX
+    return action.group == 'MOTION'
 end
 local function action_is_window_switch(action)
-    return action >= _WINDOW_SWITCH_MIN and action <= _WINDOW_SWITCH_MAX
+    return action.group == 'WINDOW_SWITCH'
 end
 
 local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
@@ -679,50 +676,50 @@ end
 -- Input sequences, per mode
 
 local MOTION_TABLE = {
-    ['h']               = MOTION_LEFT,
-    ['j']               = MOTION_DOWN,
-    ['k']               = MOTION_UP,
-    ['l']               = MOTION_RIGHT,
-    ['0']               = MOTION_HOME,
-    ['$']               = MOTION_END,
-    ['gg']              = MOTION_FIRST,
-    ['G']               = MOTION_LAST,
+    ['h']               = ACT.MOTION_LEFT,
+    ['j']               = ACT.MOTION_DOWN,
+    ['k']               = ACT.MOTION_UP,
+    ['l']               = ACT.MOTION_RIGHT,
+    ['0']               = ACT.MOTION_HOME,
+    ['$']               = ACT.MOTION_END,
+    ['gg']              = ACT.MOTION_FIRST,
+    ['G']               = ACT.MOTION_LAST,
 }
 
 local OPERATOR_TABLE = {
-    ['c']               = OP_CHANGE,
-    ['d']               = OP_DELETE,
+    ['c']               = ACT.OP_CHANGE,
+    ['d']               = ACT.OP_DELETE,
 }
 
 local INPUT_TABLES = {
     [MODE.NORMAL] = {
-        ['QQ']              = QUIT,
+        ['QQ']              = ACT.QUIT,
 
-        ['i']               = ENTER_INSERT,
-        ['v']               = ENTER_VISUAL_CHAR,
-        ['V']               = ENTER_VISUAL_LINE,
+        ['i']               = ACT.ENTER_INSERT,
+        ['v']               = ACT.ENTER_VISUAL_CHAR,
+        ['V']               = ACT.ENTER_VISUAL_LINE,
 
-        [CTRL('E')]         = SCROLL_DOWN,
-        [CTRL('Y')]         = SCROLL_UP,
-        [CTRL('D')]         = SCROLL_HALFPAGE_DOWN,
-        [CTRL('U')]         = SCROLL_HALFPAGE_UP,
+        [CTRL('E')]         = ACT.SCROLL_DOWN,
+        [CTRL('Y')]         = ACT.SCROLL_UP,
+        [CTRL('D')]         = ACT.SCROLL_HALFPAGE_DOWN,
+        [CTRL('U')]         = ACT.SCROLL_HALFPAGE_UP,
         ['\027[M...']       = handle_mouse_input,
-        [CTRL('N')]         = WINDOW_NEXT,
-        [CTRL('P')]         = WINDOW_PREV,
+        [CTRL('N')]         = ACT.WINDOW_NEXT,
+        [CTRL('P')]         = ACT.WINDOW_PREV,
     },
     [MODE.INSERT] = {
-        ['\027']            = EXIT_INSERT,
+        ['\027']            = ACT.EXIT_INSERT,
         ['.']               = handle_insert_char,
     },
     [MODE.VISUAL_CHAR] = {
-        ['\027']            = EXIT_VISUAL,
-        ['v']               = EXIT_VISUAL,
-        ['V']               = ENTER_VISUAL_LINE,
+        ['\027']            = ACT.EXIT_VISUAL,
+        ['v']               = ACT.EXIT_VISUAL,
+        ['V']               = ACT.ENTER_VISUAL_LINE,
     },
     [MODE.VISUAL_LINE] = {
-        ['\027']            = EXIT_VISUAL,
-        ['v']               = ENTER_VISUAL_CHAR,
-        ['V']               = EXIT_VISUAL,
+        ['\027']            = ACT.EXIT_VISUAL,
+        ['v']               = ACT.ENTER_VISUAL_CHAR,
+        ['V']               = ACT.EXIT_VISUAL,
     },
     [MODE.OPERATOR] = {
         ['.']               = EXIT_OPERATOR,
@@ -811,7 +808,7 @@ local function InputHandler()
             local lookup = match_table[c] or match_table[0]
             if lookup ~= nil then
                 prefix[#prefix + 1] = c
-                if type(lookup) == 'table' then
+                if type(lookup) == 'table' and lookup.enum ~= ACT then
                     -- This is a sub-table: add the character to the buffer
                     -- and match on the sub-table
                     matches[idx] = {prefix, lookup}
@@ -830,7 +827,7 @@ local function InputHandler()
         -- Also check for starting a new match. We do this only after
         -- advancing previous matches so we don't advance this one again
         local lookup = input_tree[c] or input_tree[0]
-        if type(lookup) == 'table' then
+        if type(lookup) == 'table' and lookup.enum ~= ACT then
             -- New match
             matches[#matches + 1] = {{c}, lookup}
         elseif lookup ~= nil then
@@ -916,39 +913,39 @@ local function TreeDebugBuffer(buf)
 end
 
 local function get_scroll_amount(action, window)
-    if action == SCROLL_UP then
+    if action == ACT.SCROLL_UP then
         return -1
-    elseif action == SCROLL_DOWN then
+    elseif action == ACT.SCROLL_DOWN then
         return 1
-    elseif action == SCROLL_HALFPAGE_UP then
+    elseif action == ACT.SCROLL_HALFPAGE_UP then
         return -bit.rshift(window.rows, 1)
-    elseif action == SCROLL_HALFPAGE_DOWN then
+    elseif action == ACT.SCROLL_HALFPAGE_DOWN then
         return bit.rshift(window.rows, 1)
     end
 end
 
 local function get_motion_props(buf, raw_count, action, start)
     local count = raw_count or 1
-    if action == MOTION_UP then
-        return start.delta(-count, 0), M_LINEWISE, M_INC
-    elseif action == MOTION_DOWN then
-        return start.delta(count, 0), M_LINEWISE, M_INC
-    elseif action == MOTION_LEFT then
-        return start.delta(0, -count), M_CHARWISE, M_EXC
-    elseif action == MOTION_RIGHT then
-        return start.delta(0, count), M_CHARWISE, M_EXC
-    elseif action == MOTION_HOME then
-        return Pos(start.line, 0), M_CHARWISE, M_EXC
-    elseif action == MOTION_END then
+    if action == ACT.MOTION_UP then
+        return start.delta(-count, 0), MP.LINEWISE, MP.INC
+    elseif action == ACT.MOTION_DOWN then
+        return start.delta(count, 0), MP.LINEWISE, MP.INC
+    elseif action == ACT.MOTION_LEFT then
+        return start.delta(0, -count), MP.CHARWISE, MP.EXC
+    elseif action == ACT.MOTION_RIGHT then
+        return start.delta(0, count), MP.CHARWISE, MP.EXC
+    elseif action == ACT.MOTION_HOME then
+        return Pos(start.line, 0), MP.CHARWISE, MP.EXC
+    elseif action == ACT.MOTION_END then
         local len = buf.get_line_len(start.line) - 1
-        return Pos(start.line, len), M_CHARWISE, M_INC
-    elseif action == MOTION_FIRST then
-        return Pos(raw_count and (raw_count - 1) or 0, 0), M_LINEWISE, M_INC
-    elseif action == MOTION_LAST then
+        return Pos(start.line, len), MP.CHARWISE, MP.INC
+    elseif action == ACT.MOTION_FIRST then
+        return Pos(raw_count and (raw_count - 1) or 0, 0), MP.LINEWISE, MP.INC
+    elseif action == ACT.MOTION_LAST then
         local last = buf.get_line_count() - 1
-        return Pos(raw_count and (raw_count - 1) or last, 0), M_LINEWISE, M_INC
-    elseif action == MOTION_NL then
-        return Pos(start.line + 1, 0), M_LINEWISE, M_INC
+        return Pos(raw_count and (raw_count - 1) or last, 0), MP.LINEWISE, MP.INC
+    elseif action == ACT.MOTION_NL then
+        return Pos(start.line + 1, 0), MP.LINEWISE, MP.INC
     end
 end
 
@@ -1254,18 +1251,18 @@ local function run_ui(ui, paths, debug)
         end
 
         -- Handle linewise/charwise and inclusive/exclusive
-        if mtype == M_LINEWISE then
+        if mtype == MP.LINEWISE then
             -- XXX ignore inclusive/exclusive
             start.byte = 0
             -- Sorta hacky: linewise change operator expects to get a new
             -- line when starting the insert, so cut off before the last byte
-            if action == OP_CHANGE then
+            if action == ACT.OP_CHANGE then
                 stop.byte = window.buf.get_line_len(stop.line) - 1
             else
                 stop.line = stop.line + 1
                 stop.byte = 0
             end
-        elseif inc == M_INC then
+        elseif inc == MP.INC then
             stop.byte = stop.byte + 1
         end
 
@@ -1281,7 +1278,7 @@ local function run_ui(ui, paths, debug)
             ts_ctx.parse_buf(window.buf)
         end
         window.cursor = start
-        if action == OP_CHANGE then
+        if action == ACT.OP_CHANGE then
             window.buf.tree = zmt.split_at_offset(window.buf.tree,
                     window.cursor.line, window.cursor.byte)
             return MODE.INSERT
@@ -1329,13 +1326,13 @@ local function run_ui(ui, paths, debug)
         ------------------------------------------------------------------------
         -- Universal commands --------------------------------------------------
         ------------------------------------------------------------------------
-        if action == QUIT then
+        if action == ACT.QUIT then
             break
         elseif action_is_window_switch(action) then
-            local offset = (action == WINDOW_NEXT and 1 or -1)
+            local offset = (action == ACT.WINDOW_NEXT and 1 or -1)
             cur_win = (cur_win + offset - 1) % #windows + 1
             window = windows[cur_win]
-        elseif action == MOUSE_DOWN then
+        elseif action == ACT.MOUSE_DOWN then
             local i, target = ui.find_window_target(unpack(data))
             if i ~= nil then
                 cur_win, window = i, target
@@ -1384,21 +1381,21 @@ local function run_ui(ui, paths, debug)
             local count = op_count and (op_count * (count or 1)) or count or 1
             -- Double operator with count works like [count - 1]j
             local stop, mtype, inc = window.get_motion_props(
-                    count - 1, MOTION_DOWN)
+                    count - 1, ACT.MOTION_DOWN)
             current_mode = operate(window, window.cursor, stop,
                     op_action, mtype, inc)
 
         ------------------------------------------------------------------------
         -- Insert Mode ---------------------------------------------------------
         ------------------------------------------------------------------------
-        elseif action == ENTER_INSERT then
+        elseif action == ACT.ENTER_INSERT then
             current_mode = MODE.INSERT
             -- Split the tree at the cursor offset
             window.buf.tree = zmt.split_at_offset(window.buf.tree,
                     window.cursor.line, window.cursor.byte)
-        elseif action == EXIT_INSERT then
+        elseif action == ACT.EXIT_INSERT then
             current_mode = MODE.NORMAL
-        elseif action == INSERT_CHAR then
+        elseif action == ACT.INSERT_CHAR then
             assert(current_mode == MODE.INSERT)
 
             local char = string.char(data)
@@ -1410,13 +1407,13 @@ local function run_ui(ui, paths, debug)
             -- HACK: just re-parse the whole buffer, and leak the old ast
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?
-            window.handle_cursor(1, data == 10 and MOTION_NL or MOTION_RIGHT)
+            window.handle_cursor(1, data == 10 and ACT.MOTION_NL or ACT.MOTION_RIGHT)
 
         ------------------------------------------------------------------------
         -- Visual Mode ---------------------------------------------------------
         ------------------------------------------------------------------------
-        elseif action == ENTER_VISUAL_CHAR or action == ENTER_VISUAL_LINE then
-            local next_mode = (action == ENTER_VISUAL_CHAR) and MODE.VISUAL_CHAR
+        elseif action == ACT.ENTER_VISUAL_CHAR or action == ACT.ENTER_VISUAL_LINE then
+            local next_mode = (action == ACT.ENTER_VISUAL_CHAR) and MODE.VISUAL_CHAR
                     or MODE.VISUAL_LINE
             if mode_is_visual(current_mode) then
                 window.update_visual(next_mode, window.cursor)
@@ -1424,14 +1421,14 @@ local function run_ui(ui, paths, debug)
                 window.start_visual(next_mode, window.cursor)
             end
             current_mode = next_mode
-        elseif action == EXIT_VISUAL then
+        elseif action == ACT.EXIT_VISUAL then
             current_mode = MODE.NORMAL
             window.end_visual()
         elseif mode_is_visual(current_mode) and action_is_operator(action) then
-            mtype = (current_mode == MODE.VISUAL_CHAR) and M_CHARWISE or
-                    M_LINEWISE
+            mtype = (current_mode == MODE.VISUAL_CHAR) and MP.CHARWISE or
+                    MP.LINEWISE
             local start, stop = window.get_visual_range()
-            current_mode = operate(window, start, stop, action, mtype, M_EXC)
+            current_mode = operate(window, start, stop, action, mtype, MP.EXC)
             window.end_visual()
         else
             --error('unknown action', action)

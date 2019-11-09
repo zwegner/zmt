@@ -21,24 +21,32 @@ function range(start, stop, step)
     return result
 end
 
-function enum(stop)
-    return unpack(range(1, stop, 1))
-end
-
-function new_enum(name, values)
+function enum(name, values)
     local container = {names = {}}
     local meta = {
         __tostring = function (v)
             return ('%s.%s'):format(name, container.names[v.idx])
         end
     }
+    -- Strip comments
+    values = values:gsub('%-%-[^\n]*\n', '')
+    local group = nil
     for idx, value in ipairs(split(values, ',?[ \t\n]+')) do
-        local e_value = {idx=idx}
-        setmetatable(e_value, meta)
-        assert(not container[value])
-        container[value] = e_value
-        container[idx] = e_value
-        container.names[idx] = value
+        value = strip(value)
+        -- Parse groups
+        if value:sub(-2, -1) == ':{' then
+            group = value:sub(1, -3)
+        elseif value == '}' then
+            group = nil
+        -- Normal enum values
+        elseif #value > 0 then
+            local e_value = {idx=idx, group=group, enum=container}
+            setmetatable(e_value, meta)
+            assert(not container[value], str(value))
+            container[value] = e_value
+            container[idx] = e_value
+            container.names[idx] = value
+        end
     end
     return container
 end
