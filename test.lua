@@ -3,6 +3,7 @@ require('stdlib')
 local zmt = require('zmt')
 local ed = require('ed')
 local ui = require('ui')
+local input = require('input')
 local ts = require('ts')
 
 -- Helpers
@@ -86,6 +87,24 @@ local function create_fake_buffer(name, data, piece_size)
     local buf = zmt.Buffer(name, tree)
     buf.query = ts.TS_NULL_QUERY
     return buf
+end
+
+-- A wrapper around a few UI things
+local function DumbUI(buffers, windows)
+    local self = {}
+    local input_handler = input.InputHandler()
+    local state = ed.EdState(buffers, windows, ts.TS_NULL_CONTEXT)
+    function self.feed(input)
+        input_handler.reset(state.mode)
+        for _, char in iter_bytes(input) do
+            local action, count, _, data = input_handler.feed(char)
+            if action ~= nil then
+                state.handle_action(action, count, data)
+                input_handler.reset(state.mode)
+            end
+        end
+    end
+    return self
 end
 
 local function check_grid(name, win, expected_grid, check_attrs)
@@ -335,24 +354,24 @@ local TESTS = {
         local data = ('0123456789\n'):rep(3) .. '\n\n'
         local buf = create_fake_buffer('[test]', data, 8)
         local win = ui.Window(buf, 4, 20)
-
         win.show_line_numbers = false
-        win.start_visual(ed.MODE.VISUAL_CHAR, ed.Pos(0, 0))
-        win.update_visual(ed.MODE.VISUAL_CHAR, ed.Pos(2, 0))
+        local dumb_ui = DumbUI({buf}, {win})
+
+        dumb_ui.feed('v2j')
 
         check_grid('visual mode works', win, [[
-            |{visual:^0123456789}          |
             |{visual:0123456789}          |
-            |{visual:0}123456789          |
+            |{visual:0123456789}          |
+            |{visual:^0}123456789          |
             |{status:[test]              }|
         ]], true)
 
-        win.buf.tree = zmt.lib.delete_byte_range(win.buf.tree, 11, 21)
+        dumb_ui.feed('\027kd$kv2j')
 
         check_grid('visual mode works on empty lines', win, [[
-            |{visual:^0123456789}          |
+            |{visual:0123456789}          |
             |{visual: }                   |
-            |{visual:0}123456789          |
+            |{visual:^0}123456789          |
             |{status:[test]              }|
         ]], true)
     end},
