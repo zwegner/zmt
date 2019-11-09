@@ -33,6 +33,7 @@ local function handle_insert_char(buf)
 end
 
 local function CTRL(x) return string.char(bit.band(string.byte(x), 0x1f)) end
+local ESC = CTRL('[')
 
 local function byte_in_range(c, a, b)
     return (c >= string.byte(a) and c <= string.byte(b))
@@ -68,21 +69,21 @@ local INPUT_TABLES = {
         [CTRL('Y')]         = ACT.SCROLL_UP,
         [CTRL('D')]         = ACT.SCROLL_HALFPAGE_DOWN,
         [CTRL('U')]         = ACT.SCROLL_HALFPAGE_UP,
-        ['\027[M...']       = handle_mouse_input,
+        [ESC..'[M...']      = handle_mouse_input,
         [CTRL('N')]         = ACT.WINDOW_NEXT,
         [CTRL('P')]         = ACT.WINDOW_PREV,
     },
     [MODE.INSERT] = {
-        ['\027']            = ACT.EXIT_INSERT,
+        [ESC]               = ACT.EXIT_INSERT,
         ['.']               = handle_insert_char,
     },
     [MODE.VISUAL_CHAR] = {
-        ['\027']            = ACT.EXIT_VISUAL,
+        [ESC]               = ACT.EXIT_VISUAL,
         ['v']               = ACT.EXIT_VISUAL,
         ['V']               = ACT.ENTER_VISUAL_LINE,
     },
     [MODE.VISUAL_LINE] = {
-        ['\027']            = ACT.EXIT_VISUAL,
+        [ESC]               = ACT.EXIT_VISUAL,
         ['v']               = ACT.ENTER_VISUAL_CHAR,
         ['V']               = ACT.EXIT_VISUAL,
     },
@@ -219,4 +220,6 @@ end
 
 return {
     InputHandler = InputHandler,
+    CTRL = CTRL,
+    ESC = ESC,
 }

@@ -4,11 +4,12 @@ local zmt = require('zmt')
 local ed = require('ed')
 local ui = require('ui')
 local input = require('input')
+local CTRL, ESC = input.CTRL, input.ESC
 local ts = require('ts')
 
--- Helpers
-
 local VERBOSE = false
+
+-- Helpers
 
 local TEST_NAME = ''
 local function test_name(name)
@@ -90,10 +91,10 @@ local function create_fake_buffer(name, data, piece_size)
 end
 
 -- A wrapper around a few UI things
-local function DumbUI(buffers, windows)
+local function DumbUI(windows)
     local self = {}
     local input_handler = input.InputHandler()
-    local state = ed.EdState(buffers, windows, ts.TS_NULL_CONTEXT)
+    local state = ed.EdState(windows, ts.TS_NULL_CONTEXT)
     function self.feed(input)
         input_handler.reset(state.mode)
         for _, char in iter_bytes(input) do
@@ -110,37 +111,7 @@ end
 local function check_grid(name, win, expected_grid, check_attrs)
     test_name(name)
     ui.draw_lines(win, true)
-    -- Create a friendly string-based representation of the screen grid
-    local act_grid = {}
-    local cur_attr = 'default'
-    local curs_row, curs_col = win.curs_row, win.curs_col + win.left_margin()
-    for r = 0, win.rows - 1 do
-        local line = ''
-        for c = 0, win.cols - 1 do
-            -- Deal with attributes
-            local attr = ui.ATTR_NAME[win.grid[r][c].attr]
-            if check_attrs and attr ~= cur_attr then
-                if cur_attr ~= 'default' then
-                    line = line .. '}'
-                end
-                cur_attr = attr
-                if attr ~= 'default' then
-                    line = line .. '{' .. attr .. ':'
-                end
-            end
-            -- Deal with cursor
-            if r == curs_row and c == curs_col then
-                line = line .. '^'
-            end
-
-            line = line .. string.char(win.grid[r][c].ch)
-        end
-        -- Finish any attributes on the last row
-        if r == win.rows - 1 and check_attrs and cur_attr ~= 'default' then
-            line = line .. '}'
-        end
-        act_grid[#act_grid + 1] = line
-    end
+    act_grid = ui.get_grid_lines(win, check_attrs)
 
     -- Parse the expected grid
     local exp_grid = split(expected_grid, '\n')
@@ -355,7 +326,7 @@ local TESTS = {
         local buf = create_fake_buffer('[test]', data, 8)
         local win = ui.Window(buf, 4, 20)
         win.show_line_numbers = false
-        local dumb_ui = DumbUI({buf}, {win})
+        local dumb_ui = DumbUI({win})
 
         dumb_ui.feed('v2j')
 
@@ -366,7 +337,7 @@ local TESTS = {
             |{status:[test]              }|
         ]], true)
 
-        dumb_ui.feed('\027kd$kv2j')
+        dumb_ui.feed(ESC..'kd$kv2j')
 
         check_grid('visual mode works on empty lines', win, [[
             |{visual:0123456789}          |

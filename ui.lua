@@ -36,11 +36,11 @@ local ATTR_INFO = {
     ['mode_line']           = {15,   0, 'bold'},
 }
 local ATTR_ID = {}
-module.ATTR_NAME = {}
+ATTR_NAME = {}
 local idx = 1
 for k, v in pairs(ATTR_INFO) do
     ATTR_ID[k] = idx
-    module.ATTR_NAME[idx] = k
+    ATTR_NAME[idx] = k
     idx = idx + 1
 end
 
@@ -328,6 +328,41 @@ function module.draw_lines(window, is_focused)
     draw_status_line(window, is_focused)
 end
 
+-- Create a friendly table-of-strings representation of a window grid
+function module.get_grid_lines(win, use_attrs)
+    local grid = {}
+    local cur_attr = 'default'
+    local curs_row, curs_col = win.curs_row, win.curs_col + win.left_margin()
+    for r = 0, win.rows - 1 do
+        local line = ''
+        for c = 0, win.cols - 1 do
+            -- Deal with attributes
+            local attr = ATTR_NAME[win.grid[r][c].attr]
+            if use_attrs and attr ~= cur_attr then
+                if cur_attr ~= 'default' then
+                    line = line .. '}'
+                end
+                cur_attr = attr
+                if attr ~= 'default' then
+                    line = line .. '{' .. attr .. ':'
+                end
+            end
+            -- Deal with cursor
+            if r == curs_row and c == curs_col then
+                line = line .. '^'
+            end
+
+            line = line .. string.char(win.grid[r][c].ch)
+        end
+        -- Finish any attributes on the last row
+        if r == win.rows - 1 and use_attrs and cur_attr ~= 'default' then
+            line = line .. '}'
+        end
+        grid[#grid + 1] = line
+    end
+    return grid
+end
+
 --------------------------------------------------------------------------------
 -- Main ------------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -366,6 +401,8 @@ function module.Window(buf, rows, cols)
     self.grid = ffi.new('grid_cell_t['..rows..']['..cols..']')
     local default_attr = ATTR_ID['default']
 
+    -- Drawing functions
+
     function self.clear()
         self.curs_row, self.curs_col = nil, nil
         for r = 0, self.rows - 1 do
@@ -375,12 +412,23 @@ function module.Window(buf, rows, cols)
             end
         end
     end
-
     function self.clear_line(row, start_col, attr)
         for c = start_col, self.cols - 1 do
             self.grid[row][c].ch = 32
             self.grid[row][c].attr = attr
         end
+    end
+    function self.write_at(row, col, attr, str, len)
+        local c = 0
+        while col + c < self.cols and c < len do
+            self.grid[row][col + c].ch = str:byte(c+1, c+1)
+            self.grid[row][col + c].attr = attr
+            c = c + 1
+        end
+    end
+
+    function self.mark_cursor(row, col)
+        self.curs_row, self.curs_col = row, col - self.left_margin()
     end
 
     function self.left_margin()
@@ -408,19 +456,6 @@ function module.Window(buf, rows, cols)
             self.start_line = self.cursor.line - self.rows + 2
         end
         self.clip_view()
-    end
-
-    function self.mark_cursor(row, col)
-        self.curs_row, self.curs_col = row, col - self.left_margin()
-    end
-
-    function self.write_at(row, col, attr, str, len)
-        local c = 0
-        while col + c < self.cols and c < len do
-            self.grid[row][col + c].ch = str:byte(c+1, c+1)
-            self.grid[row][col + c].attr = attr
-            c = c + 1
-        end
     end
 
     function self.clip_cursor(cursor)
@@ -474,6 +509,7 @@ function module.Window(buf, rows, cols)
     end
 
     -- Visual mode
+
     function self.start_visual(mode, cursor)
         self.visual_start = cursor.copy()
         self.update_visual(mode, cursor)
