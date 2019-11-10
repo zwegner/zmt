@@ -83,6 +83,16 @@ local function tree_insert_bytes(tree, offset, data)
 end
 
 local function create_fake_buffer(name, data, piece_size)
+    if type(data) == 'table' then
+        line = ''
+        for _, length in ipairs(data) do
+            for i = 0, length-1 do
+                line = line .. (i % 10)
+            end
+            line = line .. '\n'
+        end
+        data = line
+    end
     local chunk = zmt.lib.write_new_chunk(data, #data)
     local tree = zmt.lib.dumb_read_data(chunk, piece_size)
     local buf = zmt.Buffer(name, tree)
@@ -290,8 +300,7 @@ local TESTS = {
     end},
 
     {'line wrapping', function ()
-        local data = ('012345678901234567890123456789\n'):rep(10)
-        local buf = create_fake_buffer('[test]', data, 4)
+        local buf = create_fake_buffer('[test]', rep(30, 5), 4)
         local win = ui.Window(buf, 10, 20)
 
         check_grid('lines wrap properly 1', win, [[
@@ -322,8 +331,7 @@ local TESTS = {
     end},
 
     {'visual mode', function ()
-        local data = ('0123456789\n'):rep(3) .. '\n\n'
-        local buf = create_fake_buffer('[test]', data, 8)
+        local buf = create_fake_buffer('[test]', rep(10, 3), 8)
         local win = ui.Window(buf, 4, 20)
         win.show_line_numbers = false
         local dumb_ui = DumbUI({win})
@@ -345,6 +353,48 @@ local TESTS = {
             |{visual:^0}123456789          |
             |{status:[test]              }|
         ]], true)
+    end},
+
+    {'row-wise cursor and scrolling', function ()
+        local buf = create_fake_buffer('[test]', {20, 30, 0, 10, 15, 0, 0, 3}, 8)
+        local win = ui.Window(buf, 8, 20)
+        local dumb_ui = DumbUI({win})
+
+        dumb_ui.feed('gj')
+        check_grid('cursor movement works', win, [[
+            |   1 012345678901234|
+            |     ^56789          |
+            |   2 012345678901234|
+            |     567890123456789|
+            |   3                |
+            |   4 0123456789     |
+            |   5 012345678901234|
+            |[test]              |
+        ]])
+
+        dumb_ui.feed('3gj')
+        check_grid('cursor movement works', win, [[
+            |   1 012345678901234|
+            |     56789          |
+            |   2 012345678901234|
+            |     567890123456789|
+            |   3 ^               |
+            |   4 0123456789     |
+            |   5 012345678901234|
+            |[test]              |
+        ]])
+
+        dumb_ui.feed('3'..CTRL('E'))
+        check_grid('scrolling works row-wise', win, [[
+            |---2-567890123456789|
+            |   3 ^               |
+            |   4 0123456789     |
+            |   5 012345678901234|
+            |   6                |
+            |   7                |
+            |   8 012            |
+            |[test]              |
+        ]])
     end},
 }
 

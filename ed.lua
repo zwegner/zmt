@@ -29,8 +29,8 @@ local ACT = enum('ACT', [[
     -- Operators
     OPERATOR:{ OP_CHANGE OP_DELETE }
     -- Motions
-    MOTION:{ MOTION_UP MOTION_DOWN MOTION_LEFT MOTION_RIGHT MOTION_HOME
-        MOTION_END MOTION_FIRST MOTION_LAST MOTION_NL }
+    MOTION:{ MOTION_UP MOTION_DOWN MOTION_ROWS_UP MOTION_ROWS_DOWN MOTION_LEFT
+        MOTION_RIGHT MOTION_HOME MOTION_END MOTION_FIRST MOTION_LAST MOTION_NL }
     -- Insert mode
     INSERT_CHAR
     -- Scrolling
@@ -84,12 +84,52 @@ local function Pos(line, byte, want_col)
     return self
 end
 
-function get_motion_props(buf, raw_count, action, start)
+local function get_round_line_len(buf, line, width)
+    local len = buf.get_line_len(line) - 1
+    if len == 0 then return width end
+    return len + (-len) % width
+end
+
+local function get_motion_props(buf, win, raw_count, action, start)
     local count = raw_count or 1
     if action == ACT.MOTION_UP then
         return start.delta(-count, 0), MP.LINEWISE, MP.INC
     elseif action == ACT.MOTION_DOWN then
         return start.delta(count, 0), MP.LINEWISE, MP.INC
+
+    -- Row-wise movement
+    -- XXX multibyte
+    elseif action == ACT.MOTION_ROWS_UP then
+        local width = win.inner_width()
+        local line, col = start.line, start.want_col
+        while count > 0 and (line > 0 or col > 0) do
+            if col >= width then
+                col = col - width
+            else
+                line = line - 1
+                local len = buf.get_line_len(line) - 1
+                col = col + len - (len % width)
+            end
+            count = count - 1
+        end
+        return Pos(line, col), MP.CHARWISE, MP.EXC
+    elseif action == ACT.MOTION_ROWS_DOWN then
+        local width = win.inner_width()
+        local line_count = buf.get_line_count()
+        local line, col = start.line, start.want_col
+        local len = get_round_line_len(buf, line, width)
+        while count > 0 and line < line_count do
+            if col + width < len then
+                col = col + width
+            else
+                line = line + 1
+                col = col % width
+                len = get_round_line_len(buf, line, width)
+            end
+            count = count - 1
+        end
+        return Pos(line, col, col), MP.CHARWISE, MP.EXC
+
     elseif action == ACT.MOTION_LEFT then
         return start.delta(0, -count), MP.CHARWISE, MP.EXC
     elseif action == ACT.MOTION_RIGHT then
