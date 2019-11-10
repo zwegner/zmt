@@ -472,7 +472,7 @@ function module.Window(buf, rows, cols)
 
     function self.clip_view()
         self.start_line = math.max(0, math.min(self.start_line,
-                self.buf.get_line_count() - 1))
+                self.buf.get_line_count() - 2))
     end
 
     function self.handle_scroll(action, count)

@@ -102,7 +102,7 @@ function get_motion_props(buf, raw_count, action, start)
     elseif action == ACT.MOTION_FIRST then
         return Pos(raw_count and (raw_count - 1) or 0, 0), MP.LINEWISE, MP.INC
     elseif action == ACT.MOTION_LAST then
-        local last = buf.get_line_count() - 1
+        local last = buf.get_line_count() - 2
         return Pos(raw_count and (raw_count - 1) or last, 0), MP.LINEWISE, MP.INC
     elseif action == ACT.MOTION_NL then
         return Pos(start.line + 1, 0), MP.LINEWISE, MP.INC
