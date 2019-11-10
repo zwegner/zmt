@@ -67,6 +67,13 @@ local function TSQuery(query, buf)
     return self
 end
 
+-- TS_NULL_QUERY is a singleton that conforms to the TSQuery interface but
+-- doesn't return any highlight events. Used for unknown syntax, etc.
+local TS_NULL_QUERY = {}
+function TS_NULL_QUERY.reset(offset) end
+function TS_NULL_QUERY.next_capture() end
+function TS_NULL_QUERY.current_capture() end
+
 -- TSContext holds all global tree-sitter context
 local function TSContext()
     local self = {}
@@ -112,13 +119,6 @@ local function TSContext()
 
     return self
 end
-
--- TS_NULL_QUERY is a singleton that conforms to the TSQuery interface but
--- doesn't return any highlight events. Used for unknown syntax, etc.
-local TS_NULL_QUERY = {}
-function TS_NULL_QUERY.reset(offset) end
-function TS_NULL_QUERY.next_capture() end
-function TS_NULL_QUERY.current_capture() end
 
 -- Same but for TSContext
 local TS_NULL_CONTEXT = {}
