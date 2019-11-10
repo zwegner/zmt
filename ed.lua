@@ -179,9 +179,9 @@ function EdState(windows, ts_ctx)
             end
         elseif action_is_scroll(action) then
             if data and data.target then
-                data.target.handle_scroll(action)
+                data.target.handle_scroll(action, count)
             else
-                window.handle_scroll(action)
+                window.handle_scroll(action, count)
             end
 
         elseif action_is_motion(action) then

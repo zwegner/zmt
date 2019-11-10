@@ -471,8 +471,9 @@ function module.Window(buf, rows, cols)
                 self.buf.get_line_count() - 1))
     end
 
-    function self.handle_scroll(action)
-        local scroll = get_scroll_amount(action, self)
+    function self.handle_scroll(action, count)
+        count = count or 1
+        local scroll = get_scroll_amount(action, self) * count
         local width = self.inner_width()
         -- Scroll down
         if scroll > 0 then
