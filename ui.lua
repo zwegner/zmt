@@ -47,6 +47,12 @@ end
 local LINE_NB_FMT = '%4d '
 local LINE_NB_WIDTH = 5
 
+local function WPos(row, col)
+    local self = {}
+    self.row, self.col = row, col
+    return self
+end
+
 --------------------------------------------------------------------------------
 -- Drawing ---------------------------------------------------------------------
 --------------------------------------------------------------------------------
@@ -332,7 +338,8 @@ end
 function module.get_grid_lines(win, use_attrs)
     local grid = {}
     local cur_attr = 'default'
-    local curs_row, curs_col = win.curs_row, win.curs_col + win.left_margin()
+    assert(win.w_cursor ~= nil)
+    local c_row, c_col = win.w_cursor.row, win.w_cursor.col
     for r = 0, win.rows - 1 do
         local line = ''
         for c = 0, win.cols - 1 do
@@ -348,7 +355,7 @@ function module.get_grid_lines(win, use_attrs)
                 end
             end
             -- Deal with cursor
-            if r == curs_row and c == curs_col then
+            if r == c_row and c == c_col then
                 line = line .. '^'
             end
 
@@ -384,7 +391,7 @@ function module.Window(buf, rows, cols)
     self.buf = buf
     self.rows, self.cols = rows, cols
     self.cursor = Pos(0, 0)
-    self.curs_row, self.curs_col = 0, 0
+    self.w_cursor = nil
     self.start_line, self.start_byte = 0, 0
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
@@ -404,7 +411,7 @@ function module.Window(buf, rows, cols)
     -- Drawing functions
 
     function self.clear()
-        self.curs_row, self.curs_col = nil, nil
+        self.w_cursor = nil
         for r = 0, self.rows - 1 do
             for c = 0, self.cols - 1 do
                 self.grid[r][c].ch = 32
@@ -428,19 +435,16 @@ function module.Window(buf, rows, cols)
     end
 
     function self.mark_cursor(row, col)
-        self.curs_row, self.curs_col = row, col - self.left_margin()
-    end
-
-    function self.left_margin()
-        return self.show_line_numbers and LINE_NB_WIDTH or 0
+        self.w_cursor = WPos(row, col)
     end
 
     function self.inner_width()
-        return self.cols - self.left_margin()
+        local left_margin = self.show_line_numbers and LINE_NB_WIDTH or 0
+        return self.cols - left_margin
     end
 
     function self.get_motion_props(count, action)
-        local cursor, mtype, inc = ed.get_motion_props(self.buf, count,
+        local cursor, mtype, inc = ed.get_motion_props(self.buf, self, count,
                 action, self.cursor)
         return self.clip_cursor(cursor), mtype, inc
     end
@@ -616,8 +620,8 @@ local function NCursesUI()
                     nc.mvwaddch(nc_win, r, c, win.grid[r][c].ch)
                 end
             end
-            if win_idx == cur_win and win.curs_row and win.curs_col then
-                nc.wmove(nc_win, win.curs_row, win.curs_col + win.left_margin())
+            if win_idx == cur_win and win.w_cursor then
+                nc.wmove(nc_win, win.w_cursor.row, win.w_cursor.col)
             end
             nc.wrefresh(nc_win)
         end

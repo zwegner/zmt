@@ -66,15 +66,20 @@ local POS_META = {
     end
 }
 
-local function Pos(line, byte)
+local function Pos(line, byte, want_col)
     local self = {}
     setmetatable(self, POS_META)
-    self.line, self.byte = line, byte
+    self.line, self.byte, self.want_col = line, byte, want_col or byte
     function self.copy()
-        return Pos(self.line, self.byte)
+        return Pos(self.line, self.byte, self.want_col)
     end
     function self.delta(d_l, d_b)
-        return Pos(self.line + d_l, self.byte + d_b)
+        -- For horizontal movements, reset want_col to new byte offset,
+        -- otherwise try to set the byte offset to want_col (if it's past the
+        -- line length it will get clipped later)
+        -- XXX multibyte
+        local byte = (d_b ~= 0) and self.byte + d_b or self.want_col
+        return Pos(self.line + d_l, byte, byte)
     end
     return self
 end
