@@ -237,10 +237,7 @@ function EdState(windows, ts_ctx)
                 self.mode = operate(window, window.cursor, stop,
                         op_action, mtype, inc)
             else
-                window.handle_cursor(count, action)
-                if mode_is_visual(self.mode) then
-                    window.update_visual(self.mode, window.cursor)
-                end
+                window.handle_cursor(count, action, true)
             end
 
         ------------------------------------------------------------------------
@@ -289,7 +286,7 @@ function EdState(windows, ts_ctx)
             ts_ctx.parse_buf(window.buf)
             -- XXX dumb?
             window.handle_cursor(1, data == 10 and ACT.MOTION_NL or
-                ACT.MOTION_RIGHT)
+                ACT.MOTION_RIGHT, true)
 
         ------------------------------------------------------------------------
         -- Visual Mode ---------------------------------------------------------

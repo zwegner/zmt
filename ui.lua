@@ -260,8 +260,8 @@ function module.draw_lines(window, is_focused)
 
     -- Iterate through all lines in the file
     local first = true
-    for line, offset, is_end, piece in buf.iter_lines_from(window.start_line,
-            window.start_byte) do
+    for line, offset, is_end, piece in buf.iter_lines_from(window.win_start.line,
+            window.win_start.byte) do
         -- On the very first byte offset, update EventContext
         if first then
             first = false
@@ -269,10 +269,10 @@ function module.draw_lines(window, is_focused)
         end
         -- Line number display
         if line ~= last_line then
+            local skip = (last_line == -1) and window.win_start.byte or 0
             event_ctx.mark_line_start(line, offset)
             set_event()
 
-            local skip = false
             -- When drawing the very first line, read through events to get
             -- the current highlight state, which might start above the screen
             if last_line == -1 then
@@ -280,10 +280,9 @@ function module.draw_lines(window, is_focused)
                     handle_event(false, '')
                 end
                 cur_hl = hl_stack[#hl_stack]
-                skip = window.start_byte > 0
             end
 
-            col = draw_number_column(window, row, line, false, skip)
+            col = draw_number_column(window, row, line, false, skip > 0)
             last_line = line
 
             -- HACK: add a space on empty lines
@@ -392,7 +391,7 @@ function module.Window(buf, rows, cols)
     self.rows, self.cols = rows, cols
     self.cursor = Pos(0, 0)
     self.w_cursor = nil
-    self.start_line, self.start_byte = 0, 0
+    self.win_start = Pos(0, 0)
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
 
@@ -449,17 +448,22 @@ function module.Window(buf, rows, cols)
         return self.clip_cursor(cursor), mtype, inc
     end
 
-    function self.handle_cursor(count, action)
+    function self.handle_cursor(count, action, can_scroll)
         self.cursor = self.get_motion_props(count, action)
 
-        -- XXX handle start_byte
-        if self.cursor.line < self.start_line then
-            self.start_line = self.cursor.line
-        -- XXX line/row size. also, # of rows with status line
-        elseif self.cursor.line > self.start_line + self.rows - 2 then
-            self.start_line = self.cursor.line - self.rows + 2
+        if can_scroll then
+            -- XXX handle win_start.byte
+            if self.cursor.line < self.win_start.line then
+                self.win_start.line = self.cursor.line
+            -- XXX line/row size. also, # of rows with status line
+            elseif self.cursor.line > self.win_start.line + self.rows - 2 then
+                self.win_start.line = self.cursor.line - self.rows + 2
+            end
+            self.clip_view()
         end
-        self.clip_view()
+        if self.visual_mode then
+            self.update_visual(self.visual_mode, self.cursor)
+        end
     end
 
     function self.clip_cursor(cursor)
@@ -471,46 +475,59 @@ function module.Window(buf, rows, cols)
     end
 
     function self.clip_view()
-        self.start_line = math.max(0, math.min(self.start_line,
+        self.win_start.line = math.max(0, math.min(self.win_start.line,
                 self.buf.get_line_count() - 2))
     end
 
     function self.handle_scroll(action, count)
+        -- XXX For now, just require that we already know the cursor position
+        assert(self.w_cursor)
+        local w_row = self.w_cursor.row
         count = count or 1
         local scroll = get_scroll_amount(action, self) * count
         local width = self.inner_width()
         -- Scroll down
+        local scrolled = 0
         if scroll > 0 then
-            local len = self.buf.get_line_len(self.start_line) - 1
-            local line_count = self.buf.get_line_count()
-            while scroll > 0 and self.start_line < line_count do
-                if self.start_byte + width < len then
-                    self.start_byte = self.start_byte + width
+            local len = self.buf.get_line_len(self.win_start.line) - 1
+            local line_count = self.buf.get_line_count() - 1
+            while scrolled < scroll and self.win_start.line < line_count do
+                if self.win_start.byte + width < len then
+                    self.win_start.byte = self.win_start.byte + width
                 else
-                    self.start_line = self.start_line + 1
-                    self.start_byte = 0
-                    len = self.buf.get_line_len(self.start_line) - 1
+                    self.win_start.line = self.win_start.line + 1
+                    self.win_start.byte = 0
+                    len = self.buf.get_line_len(self.win_start.line) - 1
                 end
-                scroll = scroll - 1
+                scrolled = scrolled + 1
+            end
+            w_row = w_row - scrolled
+            if w_row < 0 then
+                self.handle_cursor(-w_row, ACT.MOTION_ROWS_DOWN, false)
+                w_row = 0
             end
         -- Scroll up
         else
-            while scroll < 0 and (self.start_line > 0 or self.start_byte > 0) do
-                if self.start_byte > 0 then
-                    self.start_byte = self.start_byte - width
+            scroll = -scroll
+            while scrolled < scroll and (self.win_start.line > 0 or
+                    self.win_start.byte > 0) do
+                if self.win_start.byte > 0 then
+                    self.win_start.byte = self.win_start.byte - width
                 else
-                    self.start_line = self.start_line - 1
-                    local len = self.buf.get_line_len(self.start_line) - 1
-                    self.start_byte = len - (len % width)
+                    self.win_start.line = self.win_start.line - 1
+                    local len = self.buf.get_line_len(self.win_start.line) - 1
+                    self.win_start.byte = len - (len % width)
                 end
-                scroll = scroll + 1
+                scrolled = scrolled + 1
             end
-            self.start_byte = math.max(self.start_byte, 0)
+            self.win_start.byte = math.max(self.win_start.byte, 0)
+            w_row = w_row + scrolled
+            local last_row = self.rows - 2
+            if w_row > last_row then
+                self.handle_cursor(w_row - last_row, ACT.MOTION_ROWS_UP, false)
+                w_row = last_row
+            end
         end
-
-        self.clip_view()
-
-        -- XXX update cursor
     end
 
     -- Visual mode

@@ -115,6 +115,11 @@ local function DumbUI(windows)
             end
         end
     end
+    function self.refresh()
+        for _, win in ipairs(windows) do
+            ui.draw_lines(win, true)
+        end
+    end
     return self
 end
 
@@ -388,6 +393,23 @@ local TESTS = {
         check_grid('scrolling works row-wise', win, [[
             |---2-567890123456789|
             |   3 ^               |
+            |   4 0123456789     |
+            |   5 012345678901234|
+            |   6                |
+            |   7                |
+            |   8 012            |
+            |[test]              |
+        ]])
+
+        -- XXX Go to the first line and scroll up since we aren't handling
+        -- scrolling due to cursor movement properly yet
+        dumb_ui.feed('gg'..CTRL('Y'))
+        -- XXX refresh so we get the right cursor position
+        dumb_ui.refresh()
+        dumb_ui.feed('3'..CTRL('E'))
+        check_grid('scrolling moves cursor', win, [[
+            |---2-^567890123456789|
+            |   3                |
             |   4 0123456789     |
             |   5 012345678901234|
             |   6                |
