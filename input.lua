@@ -59,6 +59,13 @@ local OPERATOR_TABLE = {
     ['d']               = ACT.OP_DELETE,
 }
 
+local SCROLL_TABLE = {
+    [CTRL('E')]         = ACT.SCROLL_DOWN,
+    [CTRL('Y')]         = ACT.SCROLL_UP,
+    [CTRL('D')]         = ACT.SCROLL_HALFPAGE_DOWN,
+    [CTRL('U')]         = ACT.SCROLL_HALFPAGE_UP,
+}
+
 local INPUT_TABLES = {
     [MODE.NORMAL] = {
         ['QQ']              = ACT.QUIT,
@@ -67,10 +74,6 @@ local INPUT_TABLES = {
         ['v']               = ACT.ENTER_VISUAL_CHAR,
         ['V']               = ACT.ENTER_VISUAL_LINE,
 
-        [CTRL('E')]         = ACT.SCROLL_DOWN,
-        [CTRL('Y')]         = ACT.SCROLL_UP,
-        [CTRL('D')]         = ACT.SCROLL_HALFPAGE_DOWN,
-        [CTRL('U')]         = ACT.SCROLL_HALFPAGE_UP,
         [ESC..'[M...']      = handle_mouse_input,
         [CTRL('N')]         = ACT.WINDOW_NEXT,
         [CTRL('P')]         = ACT.WINDOW_PREV,
@@ -134,6 +137,11 @@ for _, mode in ipairs{MODE.NORMAL, MODE.VISUAL_CHAR, MODE.VISUAL_LINE,
         MODE.OPERATOR} do
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], op_tree)
     INPUT_TREES[mode] = merge(INPUT_TREES[mode], motion_tree)
+end
+
+local scroll_tree = parse_input_table(SCROLL_TABLE)
+for _, mode in ipairs{MODE.NORMAL, MODE.VISUAL_CHAR, MODE.VISUAL_LINE} do
+    INPUT_TREES[mode] = merge(INPUT_TREES[mode], scroll_tree)
 end
 
 -- Read input until we parse a command
