@@ -82,22 +82,25 @@ local function EventContext(window, query, width)
         -- Start the tree-sitter query over
         query.reset(offset)
         visual_start, visual_end = window.get_visual_range()
-        if visual_start and visual_start.line < line then
-            visual_start = Pos(line, offset)
+        if visual_start and visual_start < window.win_start then
+            visual_start = Pos(line, 0)
+        end
+        if visual_end and visual_end < window.win_start then
+            visual_end = Pos(line, 0)
         end
     end
 
-    function self.mark_line_start(line, offset)
+    function self.mark_line_start(line, offset, abs_off)
         -- Set next potential line wrap event
         next_wrap_offset = offset + width
         -- If this is the line with the cursor, set up an event
         cursor_offset = (line == window.cursor.line and
-                offset + window.cursor.byte)
+                abs_off + window.cursor.byte)
         -- Same, but for visual mode
         visual_start_off = (visual_start and line == visual_start.line and
-                offset + visual_start.byte)
+                abs_off + visual_start.byte)
         visual_end_off = (visual_end and line == visual_end.line and
-                offset + visual_end.byte)
+                abs_off + visual_end.byte)
     end
 
     function self.next_capture_event()
@@ -270,7 +273,8 @@ function module.draw_lines(window, is_focused)
         -- Line number display
         if line ~= last_line then
             local skip = (last_line == -1) and window.win_start.byte or 0
-            event_ctx.mark_line_start(line, offset)
+            local abs_off = offset - skip
+            event_ctx.mark_line_start(line, offset, abs_off)
             set_event()
 
             -- When drawing the very first line, read through events to get

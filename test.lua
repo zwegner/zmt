@@ -342,7 +342,6 @@ local TESTS = {
         local dumb_ui = DumbUI({win})
 
         dumb_ui.feed('v2j')
-
         check_grid('visual mode works', win, [[
             |{visual:0123456789}          |
             |{visual:0123456789}          |
@@ -351,11 +350,50 @@ local TESTS = {
         ]], true)
 
         dumb_ui.feed(ESC..'kd$kv2j')
-
         check_grid('visual mode works on empty lines', win, [[
             |{visual:0123456789}          |
             |{visual: }                   |
             |{visual:^0}123456789          |
+            |{status:[test]              }|
+        ]], true)
+
+        dumb_ui.feed(ESC..'ggv')
+        -- XXX refresh so we get the right cursor position
+        dumb_ui.refresh()
+        dumb_ui.feed('2'..CTRL('e'))
+        check_grid('visual mode is updated from scrolling', win, [[
+            |{visual:^0}123456789          |
+            |                    |
+            |                    |
+            |{status:[test]              }|
+        ]], true)
+        dumb_ui.feed('2'..CTRL('y'))
+        check_grid('visual mode is updated from scrolling 2', win, [[
+            |{visual:0123456789}          |
+            |{visual: }                   |
+            |{visual:^0}123456789          |
+            |{status:[test]              }|
+        ]], true)
+
+        -- HACKish: create another buffer with longer lines
+        buf = create_fake_buffer('[test]', rep(30, 3), 8)
+        win.buf = buf
+        dumb_ui.feed(ESC..'ggv')
+        -- XXX refresh so we get the right cursor position
+        dumb_ui.refresh()
+        dumb_ui.feed('3'..CTRL('e'))
+        check_grid('visual mode works with start byte > 0', win, [[
+            |{visual:^0}123456789          |
+            |01234567890123456789|
+            |0123456789          |
+            |{status:[test]              }|
+        ]], true)
+
+        dumb_ui.feed('3'..CTRL('y'))
+        check_grid('visual mode works with start byte > 0', win, [[
+            |{visual:01234567890123456789|
+            |0123456789}          |
+            |{visual:^0}1234567890123456789|
             |{status:[test]              }|
         ]], true)
     end},
