@@ -117,7 +117,7 @@ local function DumbUI(windows)
     end
     function self.refresh()
         for _, win in ipairs(windows) do
-            ui.draw_lines(win, true)
+            win.render(true)
         end
     end
     return self
@@ -125,7 +125,7 @@ end
 
 local function check_grid(name, win, expected_grid, check_attrs)
     test_name(name)
-    ui.draw_lines(win, true)
+    win.render(true)
     act_grid = ui.get_grid_lines(win, check_attrs)
 
     -- Parse the expected grid
@@ -322,6 +322,7 @@ local TESTS = {
         ]])
 
         win.rows, win.cols = 8, 12
+        win.mark_dirty()
 
         check_grid('lines wrap properly 2', win, [[
             |   1 ^0123456|
@@ -441,7 +442,7 @@ local TESTS = {
 
         -- XXX Go to the first line and scroll up since we aren't handling
         -- scrolling due to cursor movement properly yet
-        dumb_ui.feed('gg'..CTRL('Y'))
+        dumb_ui.feed(CTRL('y')..'gg')
         -- XXX refresh so we get the right cursor position
         dumb_ui.refresh()
         dumb_ui.feed('3'..CTRL('E'))

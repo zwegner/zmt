@@ -398,6 +398,8 @@ function module.Window(buf, rows, cols)
     self.win_start = Pos(0, 0)
     self.visual_mode = nil
     self.visual_start, self.visual_end = nil, nil
+    -- Change tracking
+    local dirty, last_focused, last_state = true, nil, nil
 
     self.show_line_numbers = true
 
@@ -437,6 +439,23 @@ function module.Window(buf, rows, cols)
         end
     end
 
+    function self.render(is_focused)
+        -- Check if we actually need to render
+        local buf_state = buf.refresh(last_state)
+        if dirty or last_state ~= buf_state or last_focused ~= is_focused then
+            module.draw_lines(self, is_focused)
+        end
+
+        dirty = false
+        last_state = buf_state
+        last_focused = is_focused
+    end
+
+    function self.mark_dirty()
+        dirty = true
+        self.w_cursor = nil
+    end
+
     function self.mark_cursor(row, col)
         self.w_cursor = WPos(row, col)
     end
@@ -468,6 +487,7 @@ function module.Window(buf, rows, cols)
         if self.visual_mode then
             self.update_visual(self.visual_mode, self.cursor)
         end
+        self.mark_dirty()
     end
 
     function self.clip_cursor(cursor)
@@ -486,7 +506,7 @@ function module.Window(buf, rows, cols)
     function self.handle_scroll(action, count)
         -- XXX For now, just require that we already know the cursor position
         assert(self.w_cursor)
-        local w_row = self.w_cursor.row
+        local w_cursor, w_row = self.w_cursor, self.w_cursor.row
         count = count or 1
         local scroll = get_scroll_amount(action, self) * count
         local width = self.inner_width()
@@ -532,6 +552,11 @@ function module.Window(buf, rows, cols)
                 w_row = last_row
             end
         end
+        -- Kinda hacky: manually set the cursor to where we think it is after
+        -- marking the window as dirty (which clears w_cursor)
+        self.mark_dirty()
+        self.w_cursor = w_cursor
+        self.w_cursor.row = w_row
     end
 
     -- Visual mode
@@ -543,6 +568,7 @@ function module.Window(buf, rows, cols)
     function self.update_visual(mode, cursor)
         self.visual_mode = mode
         self.visual_end = cursor.copy()
+        self.mark_dirty()
     end
     function self.get_visual_range()
         if not self.visual_mode then
@@ -622,8 +648,7 @@ local function NCursesUI()
             if win == self.mode_window then
                 draw_mode_line(win, current_mode)
             else
-                -- XXX actually track dirty status
-                module.draw_lines(win, win_idx == cur_win)
+                win.render(win_idx == cur_win)
             end
 
             nc.werase(nc_win)

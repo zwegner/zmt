@@ -138,6 +138,11 @@ function module.Buffer(path, tree)
     self.path = path
     self.tree = tree
 
+    -- no-op
+    function self.refresh()
+        return self.tree
+    end
+
     function self.get_line_count()
         return tonumber(lib.get_tree_total_size(self.tree).line) + 1
     end
@@ -163,26 +168,36 @@ end
 function module.TreeDebugBuffer(buf)
     local self = {}
     self.path = '[tree-debug]'
-    self.lines = 0
+    local lines = {}
+
+    function self.refresh(tree)
+        if tree == buf.tree then return tree end
+        lines = {}
+        for line in iter_tree_print(buf.tree) do
+            lines[#lines+1] = line
+        end
+        return buf.tree
+    end
 
     function self.iter_lines_from(start_line, start_byte)
-        -- XXX ignore start_byte
         return coroutine.wrap(function ()
-            local line_nb = 0
-            self.lines = 1
-            for line in iter_tree_print(buf.tree) do
-                self.lines = line_nb + 1
+            for line_nb, line in ipairs(lines) do
+                line_nb = line_nb - 1
+                if start_byte and line_nb == start_line then
+                    line = line:sub(start_byte + 1)
+                end
                 if line_nb >= start_line then
                     coroutine.yield(line_nb, 0, true, line)
                 end
-                line_nb = line_nb + 1
             end
         end)
     end
 
     function self.get_line_count()
-        -- HACK
-        return self.lines
+        return #lines
+    end
+    function self.get_line_len(line)
+        return #lines[line + 1] + 1
     end
     return self
 end
