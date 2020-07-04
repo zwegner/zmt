@@ -306,13 +306,14 @@ uint64_t get_abs_byte_offset(meta_tree_t *tree, uint64_t line, uint64_t byte) {
 
 // Initialize an iterator object. Does not allocate, it should be on the stack
 void iter_init(meta_iter_t *iter, meta_tree_t *tree, enum ITER_STATE start) {
-    iter->tree = tree;
-    iter->frame[0] = (meta_iter_frame_t) { .node = tree->root, .idx = 0,
-        .state = start };
-    iter->start_offset = (offset_t) { 0, 0 };
-    iter->end_offset = (offset_t) { 0, 0 };
-    iter->desired_offset = (offset_t) { 0, 0 };
-    iter->depth = 1;
+    *iter = (meta_iter_t) {
+        .tree = tree,
+        // XXX this zero-initializes the whole stack, which is probably
+        // unnecessary. Possibly worth micro-optimizing this away later
+        .frame = { { .node = tree->root, .idx = 0,
+            .state = start } },
+        .depth = 1,
+    };
 }
 
 // Macros for the iterative tree walking, to simulate recursion
