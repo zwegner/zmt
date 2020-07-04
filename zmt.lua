@@ -90,11 +90,13 @@ local function ptr_string(cdata)
     return ffi.string(lib.ptr_string(cdata))
 end
 
--- Recursive coroutine that formats tree printing
-local function co_tree_print(tree, node, depth)
-    local prefix = ('%s %s(%s) b=%s n=%s'):format(
-            ('  '):rep(depth), ptr_string(node), node.flags, node.byte_count,
-            node.nl_count)
+local function fmt_node(node)
+    if node == nil then
+        return '[null]'
+    end
+
+    local prefix = ('%s(%s) b=%s n=%s'):format(
+            ptr_string(node), node.flags, node.byte_count, node.nl_count)
 
     if bit.band(node.flags, lib.NODE_LEAF + lib.NODE_FILLER) ~= 0 then
         if bit.band(node.flags, lib.NODE_FILLER) ~= 0 then
@@ -102,30 +104,67 @@ local function co_tree_print(tree, node, depth)
         end
         local l = node.leaf
         local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
-        coroutine.yield(fmt(prefix, str(data)))
+        return fmt(prefix, str(data))
     elseif bit.band(node.flags, lib.NODE_HOLE) ~= 0 then
-        coroutine.yield(fmt(prefix, 'HOLE'))
-        co_tree_print(tree, tree.filler_node[0], depth+1)
-    else
-        coroutine.yield(prefix)
+        return fmt(prefix, 'HOLE')
+    end
+    return prefix
+end
+
+function module.print_node(node)
+    log(fmt_node(node))
+end
+
+-- Recursive coroutine that formats tree printing
+local function co_fmt_tree(tree, node, depth)
+    coroutine.yield(('  '):rep(depth) .. fmt_node(node))
+    if node ~= nil and bit.band(node.flags, lib.NODE_INNER) ~= 0 then
         for i = 0, lib.MAX_CHILDREN-1 do
             if node.inner.children[i] ~= nil then
-                co_tree_print(tree, node.inner.children[i], depth+1)
+                co_fmt_tree(tree, node.inner.children[i], depth+1)
             end
         end
     end
 end
 
-local function iter_tree_print(tree)
+local function iter_fmt_tree(tree)
     return coroutine.wrap(function ()
-        co_tree_print(tree, tree.root, 0)
+        co_fmt_tree(tree, tree.root, 0)
     end)
 end
 
 function module.print_tree(tree)
-    log('\n\nTREE')
-    for line in iter_tree_print(tree) do
+    log('\nTREE')
+    for line in iter_fmt_tree(tree) do
         log(line)
+    end
+end
+
+local ITER_STATE = c_enum_table(lib, [[ITER_START ITER_CHILDREN ITER_JUMP
+        ITER_HOLES]])
+
+local function fmt_offset(offset)
+    return ('{l=%s b=%s}'):format(tonumber(offset.line), tonumber(offset.byte))
+end
+
+function module.print_iter(iter)
+    log('\nITER')
+    log('  start: ' .. fmt_offset(iter.start_offset))
+    log('    end: ' .. fmt_offset(iter.end_offset))
+    log(' desire: ' .. fmt_offset(iter.desired_offset))
+    log('slice l: ' .. fmt_node(iter.slice_node_left[0]))
+    log('slice r: ' .. fmt_node(iter.slice_node_right[0]))
+    for depth = 0, iter.depth-1 do
+        local frame = iter.frame[depth]
+        logf('%2d: %13s %s %s\n', depth, ITER_STATE[tonumber(frame.state)],
+                frame.idx, fmt_node(frame.node))
+        if frame.node ~= nil and
+                bit.band(frame.node.flags, lib.NODE_INNER) ~= 0 then
+            for i = 0, lib.MAX_CHILDREN-1 do
+                local child = frame.node.inner.children[i]
+                logf('    %s\n', child ~= nil and fmt_node(child) or nil)
+            end
+        end
     end
 end
 
@@ -173,7 +212,7 @@ function module.TreeDebugBuffer(buf)
     function self.refresh(tree)
         if tree == buf.tree then return tree end
         lines = {}
-        for line in iter_tree_print(buf.tree) do
+        for line in iter_fmt_tree(buf.tree) do
             lines[#lines+1] = line
         end
         return buf.tree
