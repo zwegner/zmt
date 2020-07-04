@@ -548,7 +548,8 @@ static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
     if (!line_offset) {
         assert(byte_offset >= iter->start_offset.byte);
         assert(byte_offset < iter->end_offset.byte ||
-                (byte_offset == 0 && iter->end_offset.byte == 0));
+                (byte_offset == iter->end_offset.byte &&
+                byte_offset == iter->start_offset.byte));
 
         // Exact match
         if (iter->start_offset.byte == byte_offset)
@@ -615,7 +616,21 @@ static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
 // tree.
 static meta_tree_t *replace_current_node(meta_iter_t *iter,
         meta_node_t *new_node) {
-    iter->tree = duplicate_tree(iter->tree);
+    meta_tree_t *tree = duplicate_tree(iter->tree);
+
+    // Update the hole position if necessary
+    // XXX is replaced_node ever actually null? What should we do then?
+    meta_node_t *replaced_node = iter->frame[iter->depth].node;
+    if (replaced_node && iter->start_offset.byte < tree->hole_offset.byte) {
+        offset_t new_size = { 0, 0 };
+        if (new_node) {
+            new_size.byte = new_node->byte_count;
+            new_size.line = new_node->nl_count;
+        }
+
+        tree->hole_offset.byte += new_size.byte - replaced_node->byte_count;
+        tree->hole_offset.line += new_size.line - replaced_node->nl_count;
+    }
 
     // Walk back up the stack, copying each parent node in succession
     for (uint32_t depth = iter->depth; depth > 0; depth--) {
@@ -627,9 +642,11 @@ static meta_tree_t *replace_current_node(meta_iter_t *iter,
         meta_node_t *new_parent = duplicate_node(old_parent);
         assert(frame->idx > 0);
         new_parent->inner.children[frame->idx - 1] = new_node;
-        for (int32_t x = 0; x < MAX_CHILDREN; x++)
-            if (new_parent->inner.children[x])
-                new_parent->inner.children[x]->ref_count++;
+        for (int32_t x = 0; x < MAX_CHILDREN; x++) {
+            meta_node_t *child = new_parent->inner.children[x];
+            if (child && !(child->flags & NODE_HOLE))
+                child->ref_count++;
+        }
 
         // Update metadata
         set_inner_meta_data(new_parent);
@@ -642,8 +659,13 @@ static meta_tree_t *replace_current_node(meta_iter_t *iter,
     // XXX update chunk map, when we care about it...
 
     // Replace the tree root with the new parent that bubbled up here
-    iter->tree->root = new_node;
-    return iter->tree;
+    tree->root = new_node;
+
+    if (new_node)
+        tree->has_hole = (new_node->flags & NODE_HAS_HOLE);
+
+    iter->tree = tree;
+    return tree;
 }
 
 // Create a new tree without a hole by replacing the hole node with
@@ -792,7 +814,8 @@ meta_tree_t *delete_byte_range(meta_tree_t *tree, uint64_t start,
     meta_node_t *node = iter_start_at(iter, tree, 0, start);
 
     assert(node == iter->slice_node_right ||
-            node == iter->frame[iter->depth].node);
+            node == iter->frame[iter->depth].node ||
+            node == tree->filler_node);
 
     meta_node_t *left = NULL;
 

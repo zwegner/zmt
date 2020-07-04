@@ -254,15 +254,13 @@ local TESTS = {
     {'tree 3--deletion', function ()
         test_name('setup')
         -- Create a tree with 4x 4-byte nodes
-        local data = '0123456789abcdef'
+        local lines = {'0123456\n', '89abcdef'}
+        local data = table.concat(lines)
         local chunk = zmt.lib.write_new_chunk(data, #data)
         local tree = zmt.lib.dumb_read_data(chunk, 4)
-        check_tree(tree, {'0123', '4567', '89ab', 'cdef'}, {data})
+        check_tree(tree, {'0123', '456\n', '89ab', 'cdef'}, lines)
 
-        -- Some of these fail now
-        for _, split_offset in ipairs{-1, 0, 2,
-                --4, 6, 8, 9 -- current failures
-                } do
+        for _, split_offset in ipairs{-1, 0, 2, 4, 6, 8, 9} do
             local subtest = ('split at %d'):format(split_offset)
             test_name(subtest)
             -- Split the tree at the given offset
@@ -279,13 +277,18 @@ local TESTS = {
 
                     -- Create the expected piece state by chopping the full data
                     -- string up
-                    local pieces = {}
-                    local p_i = 1
+                    local pieces, lines = {}, {}
+                    local p_i, l_i = 1, 1
                     local i = 1
                     for _, c in iter_bytes(data) do
+                        c = string.char(c)
                         -- Append to the current piece if this char isn't deleted
                         if i <= start or i > stop then
-                            pieces[p_i] = (pieces[p_i] or '') .. string.char(c)
+                            pieces[p_i] = (pieces[p_i] or '') .. c
+                            lines[l_i] = (lines[l_i] or '') .. c
+                            if c == '\n' then
+                                l_i = l_i + 1
+                            end
                         end
                         -- Move to the next piece if this is a boundary
                         if (i == start or i == stop or i % 4 == 0 or
@@ -294,11 +297,10 @@ local TESTS = {
                         end
                         i = i + 1
                     end
-                    local new_line = data:sub(1, start) .. data:sub(stop+1)
 
                     -- Delete the range and check the output
                     local td = zmt.lib.delete_byte_range(tree, start, stop)
-                    check_tree(td, pieces, {new_line})
+                    check_tree(td, pieces, lines)
                 end
             end
         end
