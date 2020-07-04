@@ -51,6 +51,14 @@ function enum(name, values)
     return container
 end
 
+function c_enum_table(lib, values)
+    local value_list = {}
+    for _, value in ipairs(split(values, ',?[ \t\n]+')) do
+        value_list[lib[value]] = value
+    end
+    return value_list
+end
+
 function iter_unpack(table)
     return coroutine.wrap(function()
         for i, item in pairs(table) do
