@@ -241,4 +241,9 @@ function module.TreeDebugBuffer(buf)
     return self
 end
 
+-- Set callbacks so C can call us where it's convenient
+lib.print_node = module.print_node
+lib.print_tree = module.print_tree
+lib.print_iter = module.print_iter
+
 return module

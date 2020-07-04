@@ -255,6 +255,11 @@ meta_tree_t *insert_bytes_at_offset(meta_tree_t *tree, uint64_t line_offset,
         uint64_t byte_offset, const uint8_t *data, uint64_t len);
 meta_tree_t *dumb_read_data(chunk_t *chunk, uint32_t size);
 
+// C -> Lua callbacks
+extern void (*print_node)(meta_node_t *node);
+extern void (*print_tree)(meta_tree_t *tree);
+extern void (*print_iter)(meta_iter_t *iter);
+
 // Tree-sitter stuff
 TSTree *parse_c_tree(meta_tree_t *tree);
 // Hacky proto

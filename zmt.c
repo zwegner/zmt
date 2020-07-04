@@ -19,6 +19,11 @@ static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
 static meta_tree_t *replace_current_node(meta_iter_t *iter,
         meta_node_t *new_node);
 
+// C -> Lua callbacks
+void (*print_node)(meta_node_t *node);
+void (*print_tree)(meta_tree_t *tree);
+void (*print_iter)(meta_iter_t *iter);
+
 // XXX kinda dumb
 chunk_t *current_chunk;
 
