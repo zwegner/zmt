@@ -7,6 +7,18 @@
 
 #include "zmt.h"
 
+// Local prototypes
+static const uint8_t *write_data_bytes(const uint8_t *data, uint64_t len,
+        uint32_t *start, uint32_t *end);
+static meta_tree_t *duplicate_tree(meta_tree_t *tree);
+static meta_node_t *duplicate_node(meta_node_t *node);
+static void set_leaf_meta_data(meta_node_t *node);
+static void set_inner_meta_data(meta_node_t *node);
+static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
+        uint64_t line_offset, uint64_t byte_offset);
+static meta_tree_t *replace_current_node(meta_iter_t *iter,
+        meta_node_t *new_node);
+
 // XXX kinda dumb
 chunk_t *current_chunk;
 
@@ -28,10 +40,7 @@ static const meta_node_t HOLE_NODE_SINGLETON = {
     },
 };
 
-#define MAX(a, b)       ((a) >= (b) ? (a) : (b))
 
-static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
-        uint64_t line_offset, uint64_t byte_offset);
 // Helper function. This always writes to the same memory, so isn't safe to be
 // called multiple times before using the values.
 char *ptr_string(void *ptr) {
@@ -528,6 +537,8 @@ meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
     return iter_slice_at(iter, node, line_offset, byte_offset);
 }
 
+// Slice a node in half at a given offset. This fills the slice_node_left/right
+// entries in the iterator
 static meta_node_t *iter_slice_at(meta_iter_t *iter, meta_node_t *node,
         uint64_t line_offset, uint64_t byte_offset) {
     if (!node)
