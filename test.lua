@@ -15,7 +15,7 @@ local TEST_NAME = ''
 local function test_name(name)
     TEST_NAME = name
     if verbose then
-        print(('  inside test [%s]'):format(TEST_NAME))
+        logf('  inside test [%s]\n', TEST_NAME)
     end
 end
 
@@ -525,13 +525,20 @@ end
 
 local test_filter = #arg > 0 and arg[1]
 
+local n_tests, n_passed = 0, 0
+
 for i, name, fn in iter_unpack(TESTS) do
     if not test_filter or name:find(test_filter) then
         logf('%s', right_pad('Running test ' .. name .. '...', 50))
+        if verbose then
+            log('')
+        end
         TEST_NAME = ''
         local ok, res = xpcall(fn, debug.traceback)
+        n_tests = n_tests + 1
         if ok then
             log('[\027[32mPASS\027[0m]')
+            n_passed = n_passed + 1
         else
             log('[\027[31mFAIL\027[0m]')
             if #TEST_NAME > 0 and not verbose then
@@ -542,3 +549,4 @@ for i, name, fn in iter_unpack(TESTS) do
         end
     end
 end
+logf('Passed %s/%s tests, %s total assertions\n', n_tests, n_passed, N_ASSERTS)

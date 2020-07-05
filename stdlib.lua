@@ -191,6 +191,8 @@ end
 
 -- Hacky global variable to store a custom function that's called on errors
 ERROR_INFO_FN = nil
+-- ...and a hacky global variable for counting asserts
+N_ASSERTS = 0
 
 function assert_neq(a, b, name, error_fn, expected)
     expected = expected or false
@@ -198,6 +200,7 @@ function assert_neq(a, b, name, error_fn, expected)
     msg = ('assertion%s failed%s'):format(name and ' ['..name..']' or '',
         msg and ': ' .. msg or '')
     ERROR_INFO_FN = error_fn
+    N_ASSERTS = N_ASSERTS + 1
     assert(result == expected, msg)
     ERROR_INFO_FN = nil
 end
