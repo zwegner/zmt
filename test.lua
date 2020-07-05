@@ -175,6 +175,11 @@ local TESTS = {
         assert_eq(split('\nabc\n', '\n'), {'', 'abc', ''})
         assert_eq(split('\n\n\nabc\n\n\n', '\n+'), {'', 'abc', ''})
 
+        test_name('areverse')
+        assert_eq(areverse{}, {})
+        assert_eq(areverse{'a'}, {'a'})
+        assert_eq(areverse{'a', 'b', 'c'}, {'c', 'b', 'a'})
+
         test_name('enum')
         local e = enum('E', 'a, b, c\nd,\ne')
         assert_eq(#e, 5)

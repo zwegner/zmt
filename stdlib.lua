@@ -118,6 +118,14 @@ function amap(array, fn)
     return result
 end
 
+function areverse(array)
+    local result = {}
+    for i, v in ipairs(array) do
+        result[#array - i + 1] = v
+    end
+    return result
+end
+
 function right_pad(str, len)
     return str .. (' '):rep(len - #str)
 end
