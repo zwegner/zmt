@@ -19,12 +19,16 @@ local function test_name(name)
     end
 end
 
-local function piece_list(tree)
+local function piece_list_from_iter(iter)
     local l = {}
-    for iter, node, piece in zmt.iter_nodes(tree, 0, 0) do
+    for iter, node, piece in iter do
         l[#l + 1] = piece
     end
     return l
+end
+
+local function piece_list(tree)
+    return piece_list_from_iter(zmt.iter_nodes(tree, 0, 0))
 end
 
 local function line_list(tree)
@@ -65,7 +69,7 @@ local function check_tree(tree, exp_pieces, exp_lines)
 
     -- Make sure a crazy offset works
     for i, byte, line in iter_unpack{{1e10, 0}, {0, 1e10}} do
-        local iter, node = zmt.iter_start(tree, line, byte)
+        local iter, node = zmt.iter_start(tree, line, byte, true)
         assert_eq(node, nil, 'big jump finishes the iterator')
         assert_eq(iter[0].start_offset.byte, tree_size.byte,
                 'big jump gets the right offset')
@@ -256,7 +260,40 @@ local TESTS = {
         end
     end},
 
-    {'tree 3--deletion', function ()
+    {'tree 3--iteration', function ()
+        test_name('setup')
+        -- Create a tree with 4x 4-byte nodes
+        local lines = {'0123456\n', '89abcdef'}
+        local data = table.concat(lines)
+        local chunk = zmt.lib.write_new_chunk(data, #data)
+        local tree = zmt.lib.dumb_read_data(chunk, 4)
+        check_tree(tree, {'0123', '456\n', '89ab', 'cdef'}, lines)
+
+        -- Split the tree in all possible spots
+        for split_offset = 0, 16 do
+            local subtest = ('split at %d'):format(split_offset)
+            test_name(subtest)
+            local tree = tree
+            tree = zmt.lib.split_at_offset(tree, 0, split_offset)
+            for byte = 0, 16 do
+                test_name(('%s: start at %s'):format(subtest, byte))
+                local pieces = {}
+                for _, forwards in ipairs{false, true} do
+                    local iter, node = zmt.iter_start(tree, 0, byte, forwards)
+                    local i = zmt.iter_from(iter, node, forwards)
+                    local p = piece_list_from_iter(i)
+                    if forwards then
+                        pieces = concat(pieces, p)
+                    else
+                        pieces = concat(pieces, areverse(p))
+                    end
+                end
+                assert_eq(table.concat(pieces), data, 'pieces match up')
+            end
+        end
+    end},
+
+    {'tree 4--deletion', function ()
         test_name('setup')
         -- Create a tree with 4x 4-byte nodes
         local lines = {'0123456\n', '89abcdef'}

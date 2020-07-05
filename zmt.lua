@@ -31,26 +31,31 @@ defs:close()
 -- Make C library accessible elsewhere
 module.lib = lib
 
-function module.iter_start(tree, line_offset, byte_offset)
+function module.iter_start(tree, line_offset, byte_offset, forwards)
     byte_offset = byte_offset or 0
     line_offset = line_offset or 0
     local iter = ffi.new('meta_iter_t[1]')
-    local node = lib.iter_start_at(iter, tree, line_offset, byte_offset)
+    local node = lib.iter_start_at(iter, tree, line_offset, byte_offset, forwards)
     return iter, node
 end
 
--- Iterate through the given piece tree, starting at the given offset
-function module.iter_nodes(tree, line_offset, byte_offset)
+function module.iter_from(iter, node, forwards)
+    local advance = forwards and lib.iter_next or lib.iter_prev
     return coroutine.wrap(function()
-        local iter, node = module.iter_start(tree, line_offset, byte_offset)
         while node ~= nil do
             local l = node.leaf
             -- end is a keyword. Oh well, it's the proper variable name
             local data = ffi.string(l.chunk_data + l.start, l['end'] - l.start)
             coroutine.yield(iter[0], node, data)
-            node = lib.iter_next(iter)
+            node = advance(iter)
         end
     end)
+end
+
+-- Iterate through the given piece tree, starting at the given offset
+function module.iter_nodes(tree, line_offset, byte_offset)
+    local iter, node = module.iter_start(tree, line_offset, byte_offset, true)
+    return module.iter_from(iter, node, true)
 end
 
 -- Iterate through pieces, broken up by lines. We yield successive tuples of

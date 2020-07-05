@@ -197,6 +197,7 @@ typedef struct {
     // Tree walking stack and depth counter
     meta_iter_frame_t frame[ITER_STACK_SIZE];
     int32_t depth;
+    bool post_inc;
 
     // These offsets are set during iteration to the start/end points of
     // each leaf node.
@@ -234,9 +235,12 @@ uint64_t get_abs_byte_offset(meta_tree_t *tree, uint64_t line, uint64_t byte);
 
 // Iteration
 void iter_init(meta_iter_t *iter, meta_tree_t *tree, enum ITER_STATE start);
+void iter_init_backwards(meta_iter_t *iter, meta_tree_t *tree,
+        enum ITER_STATE start);
 meta_node_t *iter_next(meta_iter_t *iter);
+meta_node_t *iter_prev(meta_iter_t *iter);
 meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
-        uint64_t line_offset, uint64_t byte_offset);
+        uint64_t line_offset, uint64_t byte_offset, bool forwards);
 
 // Mutation
 meta_tree_t *split_at_offset(meta_tree_t *tree, uint64_t line_offset,
