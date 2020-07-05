@@ -309,6 +309,19 @@ uint64_t get_abs_byte_offset(meta_tree_t *tree, uint64_t line, uint64_t byte) {
 // Iteration ///////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+// Check whether the given offset is past the desired offset, depending on
+// whether we're jumping to a byte or a line. The condition is flipped when
+// iterating backwards.
+static inline bool iter_cmp_offset(meta_iter_t *iter, offset_t offset,
+        bool forwards) {
+    bool past = (!iter->desired_offset.line ?
+            (offset.byte >  iter->desired_offset.byte) :
+            (offset.line >= iter->desired_offset.line));
+    if (!forwards)
+        past = !past;
+    return past;
+}
+
 // Include iter.c with both forwards and backwards specialization
 
 #define DIRECTION   (1)
@@ -350,6 +363,19 @@ meta_node_t *iter_start_at(meta_iter_t *iter, meta_tree_t *tree,
     else
         node = iter_prev(iter);
 
+    // Icky: if the tree only has one node (hole or leaf), double check that
+    // we weren't supposed to go past the node. This is usually handled in
+    // the ITER_JUMP logic, but it only applies it to inner nodes--when it
+    // reaches a leaf, it assumes the offset is fine
+    if (node && tree->root->flags & (NODE_LEAF | NODE_HOLE)) {
+        offset_t far = forwards ? iter->end_offset : iter->start_offset;
+        if (!iter_cmp_offset(iter, far, forwards)) {
+            iter->start_offset = far;
+            iter->end_offset = far;
+            node = NULL;
+            iter->depth--;
+        }
+    }
     return iter_slice_at(iter, node, line_offset, byte_offset, forwards);
 }
 

@@ -261,22 +261,10 @@ local TESTS = {
     end},
 
     {'tree 3--iteration', function ()
-        test_name('setup')
-        -- Create a tree with 4x 4-byte nodes
-        local lines = {'0123456\n', '89abcdef'}
-        local data = table.concat(lines)
-        local chunk = zmt.lib.write_new_chunk(data, #data)
-        local tree = zmt.lib.dumb_read_data(chunk, 4)
-        check_tree(tree, {'0123', '456\n', '89ab', 'cdef'}, lines)
-
-        -- Split the tree in all possible spots
-        for split_offset = 0, 16 do
-            local subtest = ('split at %d'):format(split_offset)
-            test_name(subtest)
-            local tree = tree
-            tree = zmt.lib.split_at_offset(tree, 0, split_offset)
-            for byte = 0, 16 do
-                test_name(('%s: start at %s'):format(subtest, byte))
+        -- Helper function: from all possible start points, iterate forwards and
+        -- backwards, and make sure the pieces found add up to the given data
+        local function check_iter(tree, data)
+            for byte = 0, #data do
                 local pieces = {}
                 for _, forwards in ipairs{false, true} do
                     local iter, node = zmt.iter_start(tree, 0, byte, forwards)
@@ -288,9 +276,36 @@ local TESTS = {
                         pieces = concat(pieces, areverse(p))
                     end
                 end
-                assert_eq(table.concat(pieces), data, 'pieces match up')
+                local name = ('start at %s, pieces match up'):format(byte)
+                assert_eq(table.concat(pieces), data, name)
             end
         end
+
+        -- Create a tree with 4x 4-byte nodes
+        test_name('setup 1--four nodes')
+        local lines = {'0123456\n', '89abcdef'}
+        local data = table.concat(lines)
+        local chunk = zmt.lib.write_new_chunk(data, #data)
+        local tree = zmt.lib.dumb_read_data(chunk, 4)
+        check_tree(tree, {'0123', '456\n', '89ab', 'cdef'}, lines)
+
+        -- Split the tree in all possible spots
+        for split_offset = 0, #data do
+            test_name(('split at %d'):format(split_offset))
+            local tree = zmt.lib.split_at_offset(tree, 0, split_offset)
+            check_iter(tree, data)
+        end
+
+        -- Test with only a single hole node as a tree
+        test_name('setup 2--one node (hole)')
+        local tree = zmt.lib.create_tree(true)
+        check_tree(tree, {}, {''})
+        check_iter(tree, '')
+
+        data = 'abcdefgh'
+        tree = zmt.lib.append_bytes_to_filler(tree, data, #data)
+        check_tree(tree, {data}, {data})
+        check_iter(tree, data)
     end},
 
     {'tree 4--deletion', function ()

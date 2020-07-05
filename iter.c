@@ -164,12 +164,7 @@ meta_node_t *ITER_NEXT_FN(meta_iter_t *iter) {
                     }
 
                     // Check whether this node contains the desired offset.
-                    // The condition is flipped when iterating backwards.
-                    bool inside = (iter->desired_offset.byte ?
-                            (off.byte >  iter->desired_offset.byte) :
-                            (off.line >= iter->desired_offset.line));
-                    if (DIRECTION == -1)
-                        inside = !inside;
+                    bool inside = iter_cmp_offset(iter, off, DIRECTION == 1);
 
                     if (inside)
                         CALL(child, ITER_JUMP);
